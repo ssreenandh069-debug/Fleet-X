@@ -361,12 +361,49 @@ class AMRAgent:
             return
         first_pos: Position = (waypoints[0][0], waypoints[0][1])
         self._hazard.ghost_eviction.heartbeat(peer_id, first_pos)
-        # Estimate peer priority conservatively
-        peer_priority = PriorityEngine.compute_priority(
-            robot_id=peer_id, urgency=1.0, battery=100.0, dist_to_goal=len(waypoints)
+        # A fully stationary broadcast means the peer is IDLE/parked and
+        # cannot yield — treat it as an immovable obstacle so we always
+        # yield (mirrors ConflictResolver.on_peer_packet).
+        is_stationary = all(
+            x == waypoints[0][0] and y == waypoints[0][1]
+            for x, y, _ in waypoints
         )
+        if is_stationary:
+            peer_priority = float("inf")
+        else:
+            # Estimate peer priority conservatively
+            peer_priority = PriorityEngine.compute_priority(
+                robot_id=peer_id, urgency=1.0, battery=100.0, dist_to_goal=len(waypoints)
+            )
         self._local_rt.ingest_trajectory(
             peer_id=peer_id, priority=peer_priority, waypoints=waypoints
+        )
+        # Runtime conflict check (was previously dead code — intents were
+        # ingested but never acted on, so NAVIGATING agents drove open-loop
+        # into parked peers, e.g. the (10,6) tick-56 crash).
+        if (
+            self._ctx.goal is not None
+            and self._ctx.planned_path
+            and self._ctx.state in (RobotState.NAVIGATING, RobotState.YIELDING)
+        ):
+            self._resolver._resolve_conflicts(peer_id, peer_priority)
+            # Propagate resolver state to the agent FSM immediately so the
+            # yield takes effect on the next tick's _do_navigating/_do_yielding.
+            if (
+                self._ctx.state == RobotState.YIELDING
+                and self._state in (AgentState.NAVIGATING, AgentState.REROUTING)
+            ):
+                self._transition(AgentState.YIELDING)
+            elif (
+                self._ctx.state == RobotState.REVERSING
+                and self._state != AgentState.REVERSING
+            ):
+                self._transition(AgentState.REVERSING)
+
+    def set_peer_positions(self, mapping: Dict[str, Position]) -> None:
+        """Refresh the live peer-position snapshot (start-of-tick)."""
+        self._resolver.update_peer_positions(
+            {k: v for k, v in mapping.items() if k != self.robot_id}
         )
 
     def on_peer_hazard(self, msg: HazardAlertMessage) -> None:

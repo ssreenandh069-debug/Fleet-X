@@ -380,6 +380,18 @@ class ConflictResolver:
         # Cache own priority at planning time (recomputed on replan)
         self._my_priority: float = 0.0
 
+        # Live peer positions snapshot (robot_id -> (x, y)), refreshed by
+        # the fleet driver at the start of every tick.  This is the
+        # drift-proof net: STA reservations assume agents stay on schedule,
+        # but execution can run ahead/behind plan (WAITs skipped, early
+        # arrivals, goal-detection lag).  A parked peer physically occupies
+        # its cell even when no reservation covers that exact tick.
+        self._peer_positions: Dict[str, Position] = {}
+
+    def update_peer_positions(self, mapping: Dict[str, Position]) -> None:
+        """Refresh the live peer-position snapshot (self excluded by caller)."""
+        self._peer_positions = dict(mapping)
+
     # ------------------------------------------------------------------
     # Public: set a new navigation goal and trigger initial plan
     # ------------------------------------------------------------------
@@ -728,6 +740,28 @@ class ConflictResolver:
         next_idx = ctx.path_index + 1
         if next_idx < len(path):
             nx, ny, _ = path[next_idx]
+            # Execution-time safety gate: never step into a cell reserved
+            # by another agent at the actual arrival tick.  Own reservations
+            # are ignored by the table, so our own committed path always
+            # passes.  Without this, agents follow stale plans open-loop
+            # (e.g. driving into a peer that parked on its goal after we
+            # planned).
+            arrive_t = current_tick + 1
+            if not self._sta_table.is_vertex_free(nx, ny, arrive_t, ctx.robot_id):
+                if ctx.state == RobotState.NAVIGATING:
+                    ctx.state = RobotState.YIELDING
+                return current_pos
+            # Live-occupancy gate: never step into a cell physically
+            # occupied by a peer at the start of this tick, even if the
+            # reservation table has a hole there due to execution drift
+            # (e.g. peer arrived early/parked on its goal).
+            if (nx, ny) in self._peer_positions.values():
+                if ctx.state == RobotState.NAVIGATING:
+                    ctx.state = RobotState.YIELDING
+                return current_pos
+            # Position-driven advance: stay robust to waits/drift instead
+            # of relying solely on exact (t, pos) sync above.
+            ctx.path_index = next_idx
             return (nx, ny)
 
         # End of path

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SIH26123 — AMR Fleet 2D View</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Consolas, Menlo, monospace; background: #0e1116; color: #dfe6ee; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 14px; background: #161b22; border-bottom: 1px solid #2a3340; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { font-size: 12px; color: #8b98a9; }
+  #status { font-size: 12px; padding: 4px 10px; border-radius: 20px; background: #3a2b00; color: #ffcf4d; }
+  #status.live { background: #0c3a1f; color: #4dff88; }
+  #status.err { background: #4a1414; color: #ff8a8a; }
+  main { display: flex; gap: 12px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+  #canvasWrap { background: #161b22; border: 1px solid #2a3340; border-radius: 8px; padding: 10px; }
+  canvas { display: block; background: #0b0e13; border-radius: 4px; }
+  aside { min-width: 300px; max-width: 380px; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: #161b22; border: 1px solid #2a3340; border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+  .card h2 { font-size: 12px; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 1px; color: #8b98a9; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .row b { color: #fff; }
+  #robots div { padding: 3px 0; border-bottom: 1px dashed #2a3340; }
+  #events { max-height: 220px; overflow-y: auto; }
+  #events div { padding: 2px 0; border-bottom: 1px solid #222b36; color: #b9c5d3; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button, input { font: inherit; font-size: 12.5px; background: #232c38; color: #e8eef5; border: 1px solid #3a4656; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { background: #2e3947; }
+  button.primary { background: #1c5c2e; border-color: #2f8f48; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  footer { padding: 8px 14px; color: #6b7889; font-size: 11.5px; }
+  code { color: #9fd0ff; }
+  body { font-family: 'Segoe UI', sans-serif; }
+  header { padding: 18px 24px; } header h1 { font-size: 20px; }
+  header .sub { display: none; }
+  main { max-width: 1440px; margin: auto; padding: 20px; gap: 20px; }
+  #canvasWrap { flex: 1 1 640px; min-width: 0; padding: 20px; border-radius: 16px; }
+  canvas { width: 100%; height: auto; }
+  aside { max-width: 380px; } .card { padding: 18px; border-radius: 12px; line-height: 1.6; }
+  button, select { font: inherit; padding: 9px 12px; border-radius: 8px; background: #232c38; color: #e8eef5; border: 1px solid #3a4656; }
+  button:focus-visible, select:focus-visible { outline: 2px solid #75c7ff; outline-offset: 3px; }
+  .toolbar, .legend { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+  .legend { font-size: 13px; gap: 12px 20px; padding: 16px 0; border-top: 1px solid #2a3340; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .symbol { display: inline-grid; place-items: center; width: 24px; height: 24px; font-style: normal; font-weight: 700; }
+  .bot { background: #4da3ff; color: #07121e; border-radius: 50%; }
+  .floor { background: #1d3039; border: 1px solid #45606b; }
+  .shelf { background: #566174; } .blocked { background: #7b2935; color: #ffb7bd; }
+  .pickup { color: #5ee3bd; border: 2px solid #5ee3bd; } .drop { color: #d5acff; border: 2px solid #c493ff; }
+  .hint { color: #a7b7c8; font-size: 13px; line-height: 1.6; margin: 6px 0 14px; }
+  #playbackStatus { color: #8fceff; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SIH26123 · AMR Fleet — 2D Warehouse</h1>
+  <span class="sub">Canvas view of <code>/api/snapshot</code> + <code>/ws</code> · backend: <code>uv run main.py serve</code></span>
+  <span id="status">disconnected</span>
+  <span class="controls">
+    <button id="btnLive" class="primary">Connect live</button>
+    <button id="btnSnap">Fetch snapshot</button>
+  </span>
+</header>
+<main>
+  <div id="canvasWrap">
+    <div class="toolbar"><b>Warehouse map</b><label for="speed">Playback</label><select id="speed"><option value="1500">Slow · 1.5 s / frame</option><option value="750">Inspect · 0.75 s / frame</option><option value="0">Real time</option></select><button id="btnPause">Pause</button><button id="btnStep">Step →</button><button id="btnLatest">Jump to live</button><button id="btnReplay">Replay captured</button></div>
+    <div id="playbackStatus" role="status"></div>
+    <p class="hint">Slow playback changes only this display. The live simulation keeps running; incoming frames are saved for inspection. Step advances one captured frame.</p>
+    <div class="legend"><span><i class="symbol bot">R1</i> Robot</span><span><i class="symbol floor"></i> Walkable tile</span><span><i class="symbol shelf">▤</i> Shelf / obstacle</span><span><i class="symbol blocked">×</i> Blocked aisle</span><span><i class="symbol pickup">P</i> Pickup</span><span><i class="symbol drop">D</i> Drop zone</span><span><i style="color:#75c7ff">┄┄</i> Planned robot route</span></div>
+    <canvas id="map" width="780" height="660" aria-label="Warehouse grid with labeled robots, shelves, pickup and drop zones"></canvas>
+    <p class="hint">P and D mark task locations, including unnamed stations. A tile can serve both roles. Robot colors match their planned routes and fleet entries.</p>
+  </div>
+  <aside>
+    <div class="card"><h2>Fleet</h2><div id="fleetMeta">—</div><div id="robots"></div></div>
+    <div class="card"><h2>Tasks</h2><div id="tasks">—</div></div>
+    <div class="card"><h2>Metrics</h2><div id="metrics">—</div></div>
+    <div class="card"><h2>Events (latest)</h2><div id="events">—</div></div>
+    <div class="card"><h2>How to run live</h2>
+      <div>1. <code>uv run main.py serve</code> (binds <code>127.0.0.1:8000</code>)</div>
+      <div>2. Click <b>Connect live</b> (uses WS <code>/ws</code>, falls back to polling <code>/api/snapshot</code>)</div>
+      <div>3. If opened via <code>file://</code> and fetch is blocked, run any static server in <code>frontend/</code></div>
+    </div>
+  </aside>
+</main>
+<footer>SIH26123 · Warehouse fleet simulation · Replay contains only frames captured while this page is connected.</footer>
+<script>
+const API = "http://127.0.0.1:8000";
+const CELL = 52, PAD = 30;
+const ROBOT_COLORS = { r1: "#4da3ff", r2: "#ffb020", r3: "#3ddc84", r4: "#c792ea", r5: "#ff6b6b" };
+const canvas = document.getElementById("map"), ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+let snap = null, mode = "disconnected", ws = null, pollTimer = null;
+let frames = [], frameIndex = -1, paused = false, lastAdvance = 0, generation = 0;
+const speedEl = document.getElementById('speed');
+function playbackInfo(){
+  const behind = Math.max(0, frames.length - 1 - frameIndex);
+  document.getElementById('playbackStatus').textContent = `${mode === 'live' ? 'Live source' : 'Waiting for backend'} · ${paused ? 'Paused' : Number(speedEl.value) ? 'Slow playback' : 'Real time'} · ${behind} captured frames behind latest · ${frames.length} frames retained (max 3000)`;
+  document.getElementById('btnPause').textContent = paused ? 'Resume' : 'Pause';
+}
+function receive(value){
+  if (!value || !value.world) return;
+  if (frames.length && value.world.tick === frames[frames.length-1].world.tick && JSON.stringify(value) === JSON.stringify(frames[frames.length-1])) return;
+  frames.push(value);
+  if (frames.length > 3000) { frames.shift(); frameIndex = Math.max(-1, frameIndex-1); }
+  if (!snap || (!paused && Number(speedEl.value) === 0)) { frameIndex = frames.length-1; snap = value; draw(); }
+  playbackInfo();
+}
+function advance(){
+  if (frameIndex < frames.length-1) snap = frames[++frameIndex];
+  draw();
+}
+
+function key(cell){ return cell[0] + "," + cell[1]; }
+function cellXY(c){ return [PAD + c[0]*CELL, PAD + (warehouse().height-1-c[1])*CELL]; } // y-up like sim
+function warehouse(){ return snap && snap.world && snap.world.warehouse; }
+function robots(){
+  return (snap && snap.robots) || {};
+}
+function setStatus(txt, cls){ statusEl.textContent = txt; statusEl.className = cls || ""; }
+
+function draw(){
+  const wh = warehouse();
+  if (!wh) {
+    canvas.width = 780; canvas.height = 360;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#8b98a9'; ctx.font = '18px Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText('Connect live or fetch a snapshot to view the warehouse', canvas.width/2, canvas.height/2);
+    ctx.textAlign = 'start'; renderPanel(); playbackInfo(); return;
+  }
+  const W = wh.width, H = wh.height;
+  canvas.width = PAD*2 + W*CELL; canvas.height = PAD*2 + H*CELL;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const shelves = new Set((wh.shelves||[]).map(key));
+  const obstacles = new Set((((snap&&snap.world&&snap.world.obstacles)||[])).map(key));
+  const stations = wh.stations || {};
+  // grid + cells
+  for (let x=0;x<W;x++) for (let y=0;y<H;y++){
+    const [px,py] = cellXY([x,y]); const k = x+","+y;
+    ctx.fillStyle = shelves.has(k) ? "#465164" : ((x+y)%2 ? "#1b2b34" : "#20323b");
+    if (obstacles.has(k)) ctx.fillStyle = "#5a1d1d";
+    ctx.fillRect(px,py,CELL,CELL);
+    ctx.strokeStyle = "#232c38"; ctx.strokeRect(px+0.5,py+0.5,CELL-1,CELL-1);
+    if (shelves.has(k) || obstacles.has(k)) {
+      ctx.fillStyle = obstacles.has(k) ? '#ffb7bd' : '#a9b5c7'; ctx.font = 'bold 20px Segoe UI';
+      ctx.fillText(obstacles.has(k) ? '×' : '▤', px+18, py+33);
+    }
+  }
+  // stations
+  for (const [name, cell] of Object.entries(stations)){
+    const [px,py] = cellXY(cell);
+    const drop = name.toLowerCase().includes('drop');
+    ctx.strokeStyle = drop ? '#c493ff' : '#5ee3bd'; ctx.lineWidth = 2; ctx.strokeRect(px+3,py+3,CELL-6,CELL-6);
+    ctx.fillStyle = ctx.strokeStyle; ctx.font = 'bold 10px Segoe UI'; ctx.fillText(drop ? 'DROP' : 'PICKUP', px+5, py+14);
+  }
+  // tasks pickup/drop markers
+  const tasks = snap.tasks || [];
+  tasks.slice(0,10).forEach(t=>{
+    const [ax,ay] = cellXY(t.pickup); ctx.fillStyle = '#5ee3bd'; ctx.font = 'bold 13px Segoe UI'; ctx.fillText('P', ax+7, ay+CELL-9);
+    const [bx,by] = cellXY(t.destination); ctx.fillStyle = '#d5acff'; ctx.fillText('D', bx+CELL-17, by+CELL-9);
+  });
+  // paths
+  for (const [id, r] of Object.entries(robots())){
+    const color = ROBOT_COLORS[id] || "#fff";
+    const path = r.path || [];
+    if (path.length > 1){
+      ctx.strokeStyle = color; ctx.globalAlpha = 0.55; ctx.lineWidth = 2; ctx.setLineDash([6,4]); ctx.beginPath();
+      const start = r.position;
+      const pts = [start, ...path.filter(p=>key(p)!==key(start))];
+      pts.forEach((c,i)=>{ const [px,py]=cellXY(c); i?ctx.lineTo(px+CELL/2,py+CELL/2):ctx.moveTo(px+CELL/2,py+CELL/2); });
+      ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+  }
+  // robots
+  for (const [id, r] of Object.entries(robots())){
+    const color = ROBOT_COLORS[id] || "#fff";
+    const [px,py] = cellXY(r.position); const cx = px+CELL/2, cy = py+CELL/2;
+    ctx.beginPath(); ctx.arc(cx,cy,CELL*0.32,0,Math.PI*2); ctx.fillStyle = color; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = (r.status==="EMERGENCY_STOP"||r.status==="WAITING") ? "#ff5252" : "#0e1116"; ctx.stroke();
+    // heading arrow
+    const h = r.heading || 0;
+    ctx.strokeStyle = "#0e1116"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx,cy);
+    ctx.moveTo(cx+Math.cos(h)*CELL*0.34, cy-Math.sin(h)*CELL*0.34);
+    ctx.lineTo(cx+Math.cos(h)*CELL*0.46, cy-Math.sin(h)*CELL*0.46); ctx.stroke();
+    ctx.fillStyle = "#07121e"; ctx.font = "bold 12px monospace";
+    ctx.fillText(id.toUpperCase(), cx-8, cy+4);
+  }
+  // axis labels
+  ctx.fillStyle = "#6b7889"; ctx.font = "10px monospace";
+  for (let x=0;x<W;x+=2) ctx.fillText(x, PAD+x*CELL+2, canvas.height-8);
+  // side panel
+  renderPanel();
+  playbackInfo();
+}
+
+function renderPanel(){
+  const list = robots();
+  const tick = (snap&&snap.world&&snap.world.tick) ?? "—";
+  const lc = (snap&&snap.lifecycle) || "disconnected";
+  const m0 = (snap&&snap.metrics)||{};
+  const doneNote = m0.all_completed ? `<p class="hint">All tasks complete. Use Replay captured to review this run.</p>` : "";
+  document.getElementById("fleetMeta").innerHTML =
+    `<div class="row"><span>lifecycle</span><b>${lc}</b></div>
+     <div class="row"><span>tick</span><b>${tick}</b></div>
+     <div class="row"><span>mode</span><b>${mode}</b></div>
+     <div class="row"><span>map</span><b>${warehouse() ? warehouse().width+'×'+warehouse().height : '—'}</b></div>${doneNote}`;
+  document.getElementById("robots").innerHTML = Object.entries(list).map(([id,r])=>{
+    const c = ROBOT_COLORS[id]||"#fff";
+    return `<div><span class="dot" style="background:${c}"></span><b>${id}</b> ${r.status} · pos [${r.position}] · task ${r.task_id||"—"} · 🔋${Math.round(r.battery||0)}% · peers ${(r.peers||[]).join(",")||"—"}${r.waiting_reason? " · <i>"+r.waiting_reason+"</i>":""}</div>`;
+  }).join("");
+  document.getElementById("tasks").innerHTML = tasksHTML();
+  const m = (snap&&snap.metrics)||{};
+  document.getElementById("metrics").innerHTML = m && Object.keys(m).length
+    ? `<div class="row"><span>completed</span><b>${m.tasks_completed??"?"} / ${m.tasks_total??"?"}</b></div>
+       <div class="row"><span>all done</span><b>${m.all_completed?"yes":"no"}</b></div>
+       <div class="row"><span>elapsed (sim s)</span><b>${m.elapsed_simulation_seconds??"?"}</b></div>
+       <div class="row"><span>collisions</span><b>${m.collisions??0}</b></div>
+       <div class="row"><span>obstacle contacts</span><b>${m.obstacle_collisions??0}</b></div>
+       <div class="row"><span>deadlocks resolved</span><b>${m.deadlocks_resolved??0}</b></div>
+       <div class="row"><span>reroutes / conflicts</span><b>${m.reroutes??0} / ${m.conflicts??0}</b></div>`
+    : `<div class="hint">No live metrics available.</div>`;
+  const ev = (snap&&snap.events)||[];
+  document.getElementById("events").innerHTML = ev.length
+    ? ev.slice(-12).reverse().map(e=>`<div>[${e.tick??"?"}] ${eventText(e)}</div>`).join("")
+    : "<div>no events yet (serve live to see conflict/negotiation/task events)</div>";
+}
+
+function tasksRemainingHint(){ return true; }
+
+function tasksHTML(){
+  const tasks = (snap&&snap.tasks)||[];
+  const m = (snap&&snap.metrics)||{};
+  const completedIds = new Set(Object.keys(m.completed_tasks||{}));
+  const activeIds = new Set(Object.values(robots()).map(r=>r.task_id).filter(Boolean));
+  return tasks.slice(0,10).map(t=>{
+    const st = completedIds.has(t.id) ? "done" : (activeIds.has(t.id) ? "active" : "pending");
+    const color = st==="done" ? "#3ddc84" : (st==="active" ? "#ffb020" : "#8b98a9");
+    return `<div class="row"><span>${t.id} <b style="color:${color}">${st}</b></span><b>[${t.pickup}] → [${t.destination}]</b></div>`;
+  }).join("") || "—";
+}
+
+function eventText(e){
+  if (typeof e !== "object" || !e.type) return JSON.stringify(e);
+  const who = e.robot_id ? " " + e.robot_id : "";
+  const task = e.task_id ? " " + e.task_id : "";
+  const extra = e.reason ? " (" + e.reason + ")" : (e.action ? " (" + e.action + ")" : "");
+  return e.type + who + task + extra;
+}
+
+async function fetchSnapshot(){
+  const requestGeneration = generation;
+  const r = await fetch(API + "/api/snapshot");
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const value = await r.json();
+  if (requestGeneration !== generation) return;
+  mode = 'live'; receive(value);
+}
+function connectLive(){
+  disconnect(false);
+  mode = "live"; setStatus("connecting live " + API + " …");
+  // Prefer WS only; start HTTP polling solely as fallback if WS fails.
+  // (Running both at once doubles connections and spams the uvicorn log.)
+  try {
+    ws = new WebSocket(API.replace("http","ws") + "/ws");
+    ws.onopen = ()=>{ setStatus("LIVE — " + API, "live"); fetchSnapshot().catch(()=>{}); };
+    ws.onmessage = (ev)=>{ try { receive(JSON.parse(ev.data)); } catch(e){} };
+    ws.onerror = ()=>{ setStatus("WS failed, polling /api/snapshot …", "err"); startPoll(2000); };
+    ws.onclose = ()=>{ if (mode==="live") startPoll(2000); };
+  } catch(e){ startPoll(2000); }
+}
+function startPoll(intervalMs){
+  if (pollTimer) return;
+  pollTimer = setInterval(async ()=>{
+    if (mode !== "live") return;
+    try { await fetchSnapshot(); setStatus("LIVE (poll) — " + API, "live"); }
+    catch(e){ setStatus("backend offline — " + e.message, "err"); }
+  }, intervalMs || 2000);
+}
+function disconnect(resetSnap=true){
+  generation++;
+  mode = "disconnected"; if (ws) { ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null; try{ws.close();}catch(e){} ws = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  snap = null; frames = []; frameIndex = -1;
+  setStatus("disconnected"); draw();
+}
+document.getElementById("btnLive").onclick = connectLive;
+document.getElementById("btnSnap").onclick = ()=>fetchSnapshot().catch(e=>setStatus("fetch failed — "+e.message+" (serve running? CORS/file://?)","err"));
+document.getElementById('btnPause').onclick = ()=>{ paused = !paused; lastAdvance = performance.now(); playbackInfo(); };
+document.getElementById('btnStep').onclick = ()=>{ paused = true; advance(); };
+document.getElementById('btnLatest').onclick = ()=>{
+  speedEl.value = '0'; paused = false;
+  if (frames.length) { frameIndex = frames.length-1; snap = frames[frameIndex]; }
+  draw();
+};
+document.getElementById('btnReplay').onclick = ()=>{
+  paused = false; speedEl.value = '1500'; lastAdvance = performance.now();
+  if (frames.length) { frameIndex = 0; snap = frames[0]; }
+  draw();
+};
+speedEl.onchange = ()=>{
+  lastAdvance = performance.now();
+  if (!paused && speedEl.value === '0' && frames.length) { frameIndex = frames.length-1; snap = frames[frameIndex]; }
+  draw();
+};
+setInterval(()=>{
+  const now = performance.now(), interval = Number(speedEl.value) || 100;
+  if (!paused && now-lastAdvance >= interval) { lastAdvance = now; advance(); }
+}, 50);
+draw();
+</script>
+</body>
+</html>
