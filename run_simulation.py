@@ -2,7 +2,7 @@
 """
 run_simulation.py
 ==================
-Real-time 4-AMR simulation driver with Godot UDP telemetry and BEL benchmark.
+Real-time 4-AMR simulation driver with BEL benchmark.
 
 Usage
 -----
@@ -15,9 +15,10 @@ Usage
 Output
 ------
   * Real-time per-tick status table (10 Hz, compressed to 100ms/line)
-  * GodotBridge: JSON datagrams to 127.0.0.1:4242 (silently skipped if
-    Godot isn't running)
   * BEL benchmark table with success-criteria assertions
+
+Note: Godot UDP telemetry has been removed.  Use web_server.py for the
+      browser-based WebSocket dashboard instead.
 """
 
 from __future__ import annotations
@@ -37,7 +38,6 @@ from core.grid_map import GridMap, WALKWAY as W, SHELF as S
 from core.space_time_astar import ReservationTable as STATable
 
 from agent.amr_agent import AMRAgent, AgentState
-from telemetry.godot_bridge import GodotBridge
 from benchmark.runner import (
     BenchmarkRunner,
     build_warehouse_grid,
@@ -149,7 +149,6 @@ def _run_auction(agents: List[AMRAgent], task: Task) -> Optional[str]:
 def run_realtime_sim(
     num_tasks: int = 50,
     max_ticks: int = 2000,
-    godot_enabled: bool = True,
 ) -> Dict:
     """
     Run the 4-AMR real-time simulation and return summary metrics.
@@ -203,10 +202,9 @@ def run_realtime_sim(
     print(sub)
     print("  " + "-" * 68)
 
-    with GodotBridge(enabled=godot_enabled) as bridge:
-        sim_start = _time.time()
+    sim_start = _time.time()
 
-        for tick in range(max_ticks):
+    for tick in range(max_ticks):
             # Auction for newly available tasks
             available = [t for t in task_queue if t.issued_tick <= tick]
             for task in available:
@@ -232,9 +230,6 @@ def run_realtime_sim(
             hazard_bus.clear()
             lease_bus.clear()
 
-            # Telemetry flush to Godot
-            bridge.flush(agents, tick)
-
             # Collision detection
             pos_map: Dict[Tuple, str] = {}
             for ag in agents:
@@ -258,7 +253,7 @@ def run_realtime_sim(
             if len(completed) >= num_tasks:
                 break
 
-        sim_elapsed = _time.time() - sim_start
+    sim_elapsed = _time.time() - sim_start
 
     # ── Summary ──────────────────────────────────────────────────────────
     print()
@@ -267,7 +262,6 @@ def run_realtime_sim(
     print(f"  Tasks completed : {len(completed)}/{num_tasks}")
     print(f"  Collisions      : {total_collision}")
     print(f"  Idle ticks      : {idle_ticks}")
-    print(f"  Godot datagrams : {bridge._sent}")
     print("=" * 72)
 
     return {
@@ -287,7 +281,6 @@ def main() -> None:
     parser.add_argument("--bench-only", action="store_true", help="Skip real-time sim")
     parser.add_argument("--tasks",  type=int, default=50,   help="Tasks for real-time sim")
     parser.add_argument("--ticks",  type=int, default=2000, help="Max ticks for sim")
-    parser.add_argument("--no-godot",   action="store_true", help="Disable UDP telemetry")
     parser.add_argument("--bench-tasks",type=int, default=100, help="Tasks for benchmark")
     args = parser.parse_args()
 
@@ -296,7 +289,6 @@ def main() -> None:
         run_realtime_sim(
             num_tasks=args.tasks,
             max_ticks=args.ticks,
-            godot_enabled=not args.no_godot,
         )
 
     # ── BEL Benchmark ────────────────────────────────────────────────

@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FLEET-X // Warehouse Digital Twin — BEL AMR Command</title>
+  <meta name="description" content="Industrial-grade autonomous warehouse fleet management digital twin with real-time A* aisle navigation, mission dispatch, hard collision prevention, and live WebSocket telemetry.">
+  <!-- TODO(security): CDN Tailwind is acceptable for this internal dashboard; pin SRI hash before production deployment. -->
+  <script src="https://cdn.tailwindcss.com/3.4.1" crossorigin="anonymous"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --clr-bg:       #050b18;
+      --clr-surface:  #0a1629;
+      --clr-border:   #1a2d4a;
+      --clr-cyan:     #06b6d4;
+      --clr-amber:    #f59e0b;
+      --clr-emerald:  #10b981;
+      --clr-rose:     #f43f5e;
+      --clr-violet:   #8b5cf6;
+      --clr-slate:    #94a3b8;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body { font-family: 'Space Grotesk', sans-serif; background: var(--clr-bg); color: #e2e8f0; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+
+    #scanlines {
+      position: fixed; inset: 0; pointer-events: none; z-index: 100;
+      background: repeating-linear-gradient(to bottom, transparent 0px, transparent 2px, rgba(0,0,0,0.09) 2px, rgba(0,0,0,0.09) 3px);
+    }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--clr-bg); }
+    ::-webkit-scrollbar-thumb { background: var(--clr-border); border-radius: 2px; }
+
+    .panel { background: rgba(10,22,41,0.88); border: 1px solid var(--clr-border); border-radius: 8px; backdrop-filter: blur(8px); }
+
+    @keyframes pulse-dot { 0%,100%{ transform:scale(1); opacity:1; } 50%{ transform:scale(1.7); opacity:0.35; } }
+    .pulse { animation: pulse-dot 1.8s ease-in-out infinite; }
+    @keyframes slide-in { from { opacity:0; transform: translateX(-6px); } to { opacity:1; transform: translateX(0); } }
+    .log-entry { animation: slide-in 0.18s ease-out forwards; }
+
+    #canvas-wrap {
+      position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; background: var(--clr-bg);
+    }
+    canvas { display: block; }
+
+    #tooltip { position: fixed; pointer-events: none; z-index: 200; display: none; }
+
+    .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .05em; font-family: 'JetBrains Mono', monospace; }
+    .badge-cyan    { background: rgba(6,182,212,.15);   color:#06b6d4;  border:1px solid rgba(6,182,212,.3); }
+    .badge-amber   { background: rgba(245,158,11,.15);  color:#f59e0b;  border:1px solid rgba(245,158,11,.3); }
+    .badge-emerald { background: rgba(16,185,129,.15);  color:#10b981;  border:1px solid rgba(16,185,129,.3); }
+    .badge-rose    { background: rgba(244,63,94,.15);   color:#f43f5e;  border:1px solid rgba(244,63,94,.3); }
+    .badge-violet  { background: rgba(139,92,246,.15);  color:#8b5cf6;  border:1px solid rgba(139,92,246,.3); }
+    .badge-slate   { background: rgba(148,163,184,.12); color:#94a3b8;  border:1px solid rgba(148,163,184,.25); }
+
+    .btn { cursor: pointer; border-radius: 6px; border: 1px solid var(--clr-border); padding: 6px 10px; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; letter-spacing: .03em; transition: all .15s ease; user-select: none; text-align: center; white-space: nowrap; }
+    .btn:hover { filter: brightness(1.25); transform: translateY(-1px); }
+    .btn:active { transform: scale(0.96); }
+    .btn-cyan    { background: rgba(6,182,212,.12);  color:#06b6d4;  border-color: rgba(6,182,212,.4); }
+    .btn-amber   { background: rgba(245,158,11,.12); color:#f59e0b;  border-color: rgba(245,158,11,.4); }
+    .btn-rose    { background: rgba(244,63,94,.12);  color:#f43f5e;  border-color: rgba(244,63,94,.4); }
+    .btn-emerald { background: rgba(16,185,129,.12); color:#10b981;  border-color: rgba(16,185,129,.4); }
+    .btn-violet  { background: rgba(139,92,246,.12); color:#8b5cf6;  border-color: rgba(139,92,246,.4); }
+
+    .metric-card { border-radius: 6px; padding: 8px 10px; }
+    #log-terminal { height: 140px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.5; }
+    #fleet-list { overflow-y: auto; max-height: 220px; }
+
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #main-row { display: flex; flex: 1 1 auto; min-height: 0; }
+
+    #sidebar {
+      flex: 0 0 290px; width: 290px; display: flex; flex-direction: column; gap: 6px;
+      padding: 6px; overflow-y: auto; border-left: 1px solid var(--clr-border);
+      background: rgba(5,11,24,0.95);
+    }
+  </style>
+</head>
+<body>
+
+<div id="scanlines" aria-hidden="true"></div>
+
+<div id="tooltip" class="panel px-3 py-2" role="tooltip" aria-live="polite">
+  <p id="tt-id"    class="mono text-cyan-400 font-bold text-xs"></p>
+  <p id="tt-state" class="mono text-[10px] text-slate-300 mt-0.5"></p>
+  <p id="tt-task"  class="mono text-[10px] text-slate-400"></p>
+  <p id="tt-bat"   class="mono text-[10px] text-amber-400"></p>
+</div>
+
+<div id="app">
+  <!-- HEADER -->
+  <header class="flex-none h-11 flex items-center justify-between px-4 border-b" style="border-color:var(--clr-border);background:rgba(5,11,24,0.97)">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
+        <div class="w-2.5 h-2.5 rounded-sm rotate-45" style="background:var(--clr-cyan);box-shadow:0 0 8px var(--clr-cyan)"></div>
+        <span class="font-bold tracking-widest text-sm">FLEET<span style="color:var(--clr-cyan)">//</span>X</span>
+      </div>
+      <span class="badge badge-slate">BEL-SIH 26123 &bull; 28&times;20 GRID &bull; DIGITAL TWIN</span>
+      <div id="ws-badge" class="flex items-center gap-1.5 badge badge-amber">
+        <span id="ws-dot" class="w-1.5 h-1.5 rounded-full pulse" style="background:currentColor"></span>
+        <span id="ws-text" class="mono text-[10px]">OFFLINE &middot; STANDALONE SIM</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-4 mono text-[11px] text-slate-400">
+      <span id="hdr-robots" class="text-cyan-500">4 AMRs</span>
+      <span>|</span>
+      <span id="hdr-time" aria-label="Current time"></span>
+      <span>|</span>
+      <span>AMR SWARM v3.2.2</span>
+    </div>
+  </header>
+
+  <!-- MAIN ROW -->
+  <div id="main-row">
+    <!-- CANVAS (~78%) -->
+    <div id="canvas-wrap">
+      <canvas id="wh-canvas" aria-label="Warehouse floor plan with autonomous robots"></canvas>
+    </div>
+
+    <!-- SIDEBAR (290px ~22%) -->
+    <aside id="sidebar">
+
+      <!-- KPI chips -->
+      <div class="grid grid-cols-3 gap-1.5">
+        <div class="metric-card panel text-center">
+          <div class="mono text-rose-400 font-bold text-base leading-none" id="kpi-collisions">0</div>
+          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Collisions</div>
+        </div>
+        <div class="metric-card panel text-center">
+          <div class="mono text-emerald-400 font-bold text-base leading-none" id="kpi-orders">0</div>
+          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Delivered</div>
+        </div>
+        <div class="metric-card panel text-center">
+          <div class="mono text-cyan-400 font-bold text-base leading-none" id="kpi-eff">0%</div>
+          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Efficiency</div>
+        </div>
+      </div>
+
+      <!-- Selected Unit -->
+      <div class="panel p-2.5">
+        <div class="flex items-center justify-between mb-2">
+          <span class="mono text-[9px] text-slate-500 uppercase tracking-widest">Selected Unit</span>
+          <span id="sel-id" class="badge badge-cyan">NONE</span>
+        </div>
+        <div class="space-y-1 mono text-[10px]">
+          <div class="flex justify-between">
+            <span class="text-slate-500">STATUS</span>
+            <span id="sel-state" class="text-slate-200 font-bold">&#8212;</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">HEADING</span>
+            <span id="sel-heading" class="text-slate-200">&#8212;</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">PAYLOAD</span>
+            <span id="sel-cargo" class="text-emerald-400">&#8212;</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">TASK</span>
+            <span id="sel-task" class="text-cyan-400 text-[9px] max-w-[110px] truncate text-right">&#8212;</span>
+          </div>
+          <div class="mt-1.5">
+            <div class="flex justify-between text-[9px] mb-1">
+              <span class="text-slate-500">BATTERY</span>
+              <span id="sel-bat-pct" class="text-amber-400">&#8212;</span>
+            </div>
+            <div class="w-full h-1.5 rounded-full" style="background:rgba(148,163,184,0.1)">
+              <div id="sel-bat-bar" class="h-1.5 rounded-full" style="width:0%;background:var(--clr-amber);transition:width 0.5s ease"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Command Actions -->
+      <div class="panel p-2.5">
+        <div class="mono text-[9px] text-slate-500 uppercase tracking-widest mb-2">Command Actions</div>
+        <div class="grid grid-cols-2 gap-1.5">
+          <button id="btn-spawn"  class="btn btn-violet col-span-2" aria-label="Spawn a new AMR robot">&#43; Spawn AMR</button>
+          <button id="btn-order"  class="btn btn-cyan"              aria-label="Dispatch a delivery order">&#128230; Dispatch</button>
+          <button id="btn-recall" class="btn btn-amber"             aria-label="Recall all to chargers">&#9889; Recall All</button>
+          <button id="btn-break"  class="btn btn-rose"              aria-label="Break selected AMR">&#128165; Break Unit</button>
+          <button id="btn-clear"  class="btn btn-emerald"           aria-label="Clear all barriers">&#129529; Clear Barriers</button>
+        </div>
+        <p class="mono text-[8px] text-slate-600 mt-1.5 text-center">Click any floor tile to drop a hazard barrier</p>
+      </div>
+
+      <!-- Fleet Roster -->
+      <div class="panel p-2.5 flex flex-col flex-1 min-h-0">
+        <div class="mono text-[9px] text-slate-500 uppercase tracking-widest mb-1.5">Fleet Roster</div>
+        <div id="fleet-list" class="space-y-1 flex-1"></div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="panel p-2.5">
+        <div class="mono text-[9px] text-slate-500 uppercase tracking-widest mb-1">Event Audit Log</div>
+        <div id="log-terminal" aria-live="polite" aria-label="Event audit log"></div>
+      </div>
+
+    </aside>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   SECURITY NOTES:
+   - All dynamic DOM text uses .textContent (never innerHTML for data).
+   - WebSocket payload parsed with JSON.parse; only known typed fields consumed.
+   - No eval(), no Function() constructor, no dynamic script loading.
+   - No authentication tokens, PII, or session data handled client-side.
+   ========================================================================= */
+"use strict";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. WAREHOUSE LAYOUT  (28 cols x 20 rows)
+// ─────────────────────────────────────────────────────────────────────────────
+const GRID_W = 28, GRID_H = 20;
+
+const WALKABLE = new Uint8Array(GRID_W * GRID_H).fill(1);
+function cellIdx(c, r){ return r * GRID_W + c; }
+function inBounds(c, r){ return c >= 0 && c < GRID_W && r >= 0 && r < GRID_H; }
+
+// CHARGERS: top row (row 0), 6 bays
+const CHARGER_CELLS = [
+  {col:2,  row:0},
+  {col:5,  row:0},
+  {col:8,  row:0},
+  {col:14, row:0},
+  {col:20, row:0},
+  {col:25, row:0},
+];
+
+// SHELF PODS: [colStart, colEnd, rowStart, rowEnd]
+const SHELF_PODS = [
+  [2,  6,  3, 4],
+  [10, 14, 3, 4],
+  [17, 21, 3, 4],
+  [2,  6,  7, 8],
+  [10, 14, 7, 8],
+  [17, 21, 7, 8],
+  [2,  6,  11, 12],
+  [10, 14, 11, 12],
+  [17, 21, 11, 12],
+  [4,  9,  15, 16],
+  [13, 18, 15, 16],
+];
+
+const SHELF_SET = new Set();
+SHELF_PODS.forEach(function(pod){
+  var c0=pod[0],c1=pod[1],r0=pod[2],r1=pod[3];
+  for(var r=r0;r<=r1;r++){
+    for(var c=c0;c<=c1;c++){
+      var key=c+','+r;
+      SHELF_SET.add(key);
+      if(inBounds(c,r)) WALKABLE[cellIdx(c,r)]=0;
+    }
+  }
+});
+
+// PICKUP BAYS
+const PICKUP_BAYS = [
+  {col:1,  row:18},
+  {col:2,  row:18},
+  {col:13, row:18},
+  {col:14, row:18},
+];
+
+// DROP BAYS
+const DROP_BAYS = [
+  {col:27, row:4},
+  {col:27, row:8},
+  {col:27, row:12},
+  {col:27, row:16},
+];
+
+// Ensure bays are walkable
+[...PICKUP_BAYS,...DROP_BAYS,...CHARGER_CELLS].forEach(function(cell){
+  if(inBounds(cell.col,cell.row)) WALKABLE[cellIdx(cell.col,cell.row)]=1;
+});
+
+const OBSTACLES = new Set();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. COLLISION SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+const stationLocks = new Map();   // "col,row" -> robotId
+const cellOccupancy = new Map();  // "col,row" -> robotId
+
+function lockStation(col, row, robotId){ stationLocks.set(col+','+row, robotId); }
+function unlockStation(col, row, robotId){
+  if(stationLocks.get(col+','+row) === robotId) stationLocks.delete(col+','+row);
+}
+function isStationFree(col, row, robotId){
+  var h = stationLocks.get(col+','+row);
+  return h === undefined || h === robotId;
+}
+
+function rebuildOccupancy(){
+  cellOccupancy.clear();
+  robots.forEach(function(rb){
+    var c=Math.round(rb.px), r=Math.round(rb.py);
+    if(!cellOccupancy.has(c+','+r)) cellOccupancy.set(c+','+r, rb.id);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. A* PATHFINDER
+// ─────────────────────────────────────────────────────────────────────────────
+function isPassable(c, r, robotId, ignoreStations){
+  if(!inBounds(c,r)) return false;
+  if(!WALKABLE[cellIdx(c,r)]) return false;
+  if(OBSTACLES.has(c+','+r)) return false;
+  if(!ignoreStations){
+    var h = stationLocks.get(c+','+r);
+    if(h !== undefined && h !== robotId) return false;
+  }
+  return true;
+}
+
+function aStar(sc, sr, ec, er, robotId, ignoreStations){
+  if(sc===ec && sr===er) return [];
+  if(!isPassable(ec, er, robotId, !!ignoreStations)) return null;
+  var DIRS=[[0,-1],[0,1],[-1,0],[1,0]];
+  var gScore=new Map(), fScore=new Map(), cameFrom=new Map(), open=new Set();
+  var sk=sc+','+sr;
+  gScore.set(sk,0);
+  fScore.set(sk,Math.abs(sc-ec)+Math.abs(sr-er));
+  open.add(sk);
+  var itr=0;
+  while(open.size>0 && itr++<6000){
+    var cur=null, curF=Infinity;
+    open.forEach(function(k){ var f=fScore.get(k)||Infinity; if(f<curF){curF=f;cur=k;} });
+    var pts=cur.split(','), cc=+pts[0], cr=+pts[1];
+    if(cc===ec && cr===er){
+      var path=[], node=cur;
+      while(cameFrom.has(node)){
+        var np=node.split(',');
+        path.unshift({col:+np[0],row:+np[1]});
+        node=cameFrom.get(node);
+      }
+      return path;
+    }
+    open.delete(cur);
+    var cg=gScore.get(cur)||0;
+    for(var d=0;d<DIRS.length;d++){
+      var nc=cc+DIRS[d][0], nr=cr+DIRS[d][1];
+      if(!isPassable(nc,nr,robotId,!!ignoreStations)) continue;
+      var nk=nc+','+nr, ng=cg+1;
+      if(ng<(gScore.get(nk)||Infinity)){
+        cameFrom.set(nk,cur); gScore.set(nk,ng);
+        fScore.set(nk,ng+Math.abs(nc-ec)+Math.abs(nr-er));
+        open.add(nk);
+      }
+    }
+  }
+  if(!ignoreStations) return aStar(sc,sr,ec,er,robotId,true);
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. MISSION SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+var ordersCompleted=0, collisionCount=0, totalTicks=0;
+function rnd(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function newMission(){
+  return {pickup:rnd(PICKUP_BAYS), drop:rnd(DROP_BAYS), label:'ORD-'+(1000+Math.floor(Math.random()*9000))};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. ROBOT FLEET
+// ─────────────────────────────────────────────────────────────────────────────
+var ROBOT_COLORS=[
+  '#06b6d4','#8b5cf6','#10b981','#f59e0b',
+  '#f43f5e','#3b82f6','#ec4899','#14b8a6',
+  '#a3e635','#fb923c','#e879f9','#38bdf8',
+  '#4ade80','#fbbf24','#fb7185','#818cf8',
+];
+var HEADINGS=['N','NE','E','SE','S','SW','W','NW'];
+var robots=[];
+var nextRobotId=5;
+var selectedId=1;
+
+function makeRobot(id, sc, sr){
+  return {
+    id:id, px:sc+0.0, py:sr+0.0, angle:0,
+    state:'IDLE', battery:75+Math.random()*24,
+    hasCargo:false, mission:null, path:[],
+    dwellTimer:0, chargerCell:null, broken:false,
+    color:ROBOT_COLORS[(id-1)%ROBOT_COLORS.length],
+    yieldTimer:0, priority:id
+  };
+}
+
+function initFleet(){
+  for(var i=0;i<4;i++){
+    var cc=CHARGER_CELLS[i];
+    var rb=makeRobot(i+1, cc.col, cc.row);
+    rb.chargerCell=cc;
+    robots.push(rb);
+  }
+}
+initFleet();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. CANVAS — HiDPI
+// ─────────────────────────────────────────────────────────────────────────────
+var canvas=document.getElementById('wh-canvas');
+var ctx=canvas.getContext('2d');
+var tileSize=26;
+
+function resizeCanvas(){
+  var wrap=document.getElementById('canvas-wrap');
+  var dpr=window.devicePixelRatio||1;
+  tileSize=Math.floor(Math.min(wrap.clientWidth/GRID_W, wrap.clientHeight/GRID_H));
+  if(tileSize<8) tileSize=8;
+  var cw=tileSize*GRID_W, ch=tileSize*GRID_H;
+  canvas.width=cw*dpr; canvas.height=ch*dpr;
+  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+var cx2=function(c){ return c*tileSize; };
+var cy2=function(r){ return r*tileSize; };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. DRAW
+// ─────────────────────────────────────────────────────────────────────────────
+var animTick=0;
+
+function drawFloor(){
+  var T=tileSize;
+  ctx.fillStyle='#050b18';
+  ctx.fillRect(0,0,GRID_W*T,GRID_H*T);
+
+  ctx.strokeStyle='rgba(26,45,74,0.4)';
+  ctx.lineWidth=0.5;
+  for(var c=0;c<=GRID_W;c++){
+    ctx.beginPath(); ctx.moveTo(cx2(c),0); ctx.lineTo(cx2(c),cy2(GRID_H)); ctx.stroke();
+  }
+  for(var r=0;r<=GRID_H;r++){
+    ctx.beginPath(); ctx.moveTo(0,cy2(r)); ctx.lineTo(cx2(GRID_W),cy2(r)); ctx.stroke();
+  }
+
+  // Horizontal highways
+  [1,5,9,13,17].forEach(function(r){
+    ctx.save(); ctx.globalAlpha=0.05; ctx.fillStyle='#06b6d4';
+    ctx.fillRect(0,cy2(r),cx2(GRID_W),T);
+    ctx.globalAlpha=1; ctx.restore();
+    for(var c=2;c<GRID_W-2;c+=5){
+      var x=cx2(c)+T/2, y=cy2(r)+T/2;
+      ctx.save(); ctx.strokeStyle='rgba(6,182,212,0.15)'; ctx.lineWidth=0.8;
+      ctx.beginPath(); ctx.moveTo(x-5,y); ctx.lineTo(x+5,y);
+      ctx.moveTo(x+2,y-3); ctx.lineTo(x+5,y); ctx.lineTo(x+2,y+3);
+      ctx.stroke(); ctx.restore();
+    }
+  });
+
+  // Vertical highways
+  [0,7,15,22,27].forEach(function(c){
+    ctx.save(); ctx.globalAlpha=0.04; ctx.fillStyle='#8b5cf6';
+    ctx.fillRect(cx2(c),0,T,cy2(GRID_H));
+    ctx.globalAlpha=1; ctx.restore();
+  });
+}
+
+function drawChargers(){
+  CHARGER_CELLS.forEach(function(cell,i){
+    var x=cx2(cell.col), y=cy2(cell.row), T=tileSize;
+    var p=0.55+0.45*Math.sin(animTick*0.08+i*1.2);
+    var g=ctx.createRadialGradient(x+T/2,y+T/2,0,x+T/2,y+T/2,T*1.2);
+    g.addColorStop(0,'rgba(245,158,11,'+(0.35*p)+')'); g.addColorStop(1,'transparent');
+    ctx.fillStyle=g; ctx.fillRect(x-T*0.2,y-T*0.2,T*1.4,T*1.4);
+    ctx.fillStyle='rgba(245,158,11,'+(0.1+0.04*p)+')';
+    ctx.strokeStyle='rgba(245,158,11,'+(0.7*p)+')'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(x+2,y+2,T-4,T-4,3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(245,158,11,'+(0.85+0.15*p)+')';
+    ctx.font='bold '+Math.floor(T*0.48)+'px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('\u26A1', x+T/2, y+T/2-1);
+    ctx.fillStyle='rgba(245,158,11,0.7)';
+    ctx.font='bold '+Math.max(5,Math.floor(T*0.2))+'px JetBrains Mono,monospace';
+    ctx.textBaseline='bottom'; ctx.fillText('C'+(i+1), x+T/2, y+T-1);
+    // Runway indicator
+    ctx.globalAlpha=0.06; ctx.fillStyle='#f59e0b';
+    ctx.fillRect(x, cy2(cell.row+1), T, T);
+    ctx.globalAlpha=1;
+  });
+}
+
+function drawPickupBays(){
+  PICKUP_BAYS.forEach(function(cell,i){
+    var x=cx2(cell.col), y=cy2(cell.row), T=tileSize;
+    var p=0.6+0.4*Math.sin(animTick*0.06+i);
+    var g=ctx.createRadialGradient(x+T/2,y+T/2,0,x+T/2,y+T/2,T);
+    g.addColorStop(0,'rgba(6,182,212,'+(0.3*p)+')'); g.addColorStop(1,'transparent');
+    ctx.fillStyle=g; ctx.fillRect(x,y,T,T);
+    ctx.fillStyle='rgba(6,182,212,0.1)';
+    ctx.strokeStyle='rgba(6,182,212,'+(0.65*p)+')'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(x+2,y+2,T-4,T-4,3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(6,182,212,'+(0.8+0.2*p)+')';
+    ctx.font='bold '+Math.floor(T*0.44)+'px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('\uD83D\uDCE6', x+T/2, y+T/2);
+    ctx.fillStyle='rgba(6,182,212,0.6)';
+    ctx.font='bold '+Math.max(5,Math.floor(T*0.18))+'px JetBrains Mono,monospace';
+    ctx.textBaseline='top'; ctx.fillText('P'+(i+1), x+T/2, y+2);
+  });
+}
+
+function drawDropBays(){
+  DROP_BAYS.forEach(function(cell,i){
+    var x=cx2(cell.col), y=cy2(cell.row), T=tileSize;
+    var p=0.6+0.4*Math.sin(animTick*0.05+i*0.7);
+    var g=ctx.createRadialGradient(x+T/2,y+T/2,0,x+T/2,y+T/2,T);
+    g.addColorStop(0,'rgba(16,185,129,'+(0.28*p)+')'); g.addColorStop(1,'transparent');
+    ctx.fillStyle=g; ctx.fillRect(x,y,T,T);
+    ctx.fillStyle='rgba(16,185,129,0.1)';
+    ctx.strokeStyle='rgba(16,185,129,'+(0.65*p)+')'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.roundRect(x+2,y+2,T-4,T-4,3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='rgba(16,185,129,'+(0.8+0.2*p)+')';
+    ctx.font='bold '+Math.floor(T*0.44)+'px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('\uD83C\uDFC1', x+T/2, y+T/2);
+    ctx.fillStyle='rgba(16,185,129,0.6)';
+    ctx.font='bold '+Math.max(5,Math.floor(T*0.18))+'px JetBrains Mono,monospace';
+    ctx.textBaseline='top'; ctx.fillText('D'+(i+1), x+T/2, y+2);
+    // Lock ring
+    var lk=cell.col+','+cell.row;
+    if(stationLocks.has(lk)){
+      ctx.save(); ctx.globalAlpha=0.45;
+      ctx.strokeStyle='#f43f5e'; ctx.lineWidth=2;
+      ctx.strokeRect(x+1,y+1,T-2,T-2); ctx.restore();
+    }
+  });
+}
+
+function drawShelves(){
+  SHELF_PODS.forEach(function(pod){
+    var c0=pod[0],c1=pod[1],r0=pod[2],r1=pod[3];
+    var palColors=['#e74c3c','#f39c12','#3498db','#2ecc71','#9b59b6','#1abc9c','#e67e22'];
+    for(var r=r0;r<=r1;r++){
+      for(var c=c0;c<=c1;c++){
+        var x=cx2(c), y=cy2(r), T=tileSize;
+        var sg=ctx.createLinearGradient(x,y,x+T,y+T);
+        sg.addColorStop(0,'#1e2d42'); sg.addColorStop(0.5,'#152032'); sg.addColorStop(1,'#0f1829');
+        ctx.fillStyle=sg; ctx.fillRect(x,y,T,T);
+        ctx.fillStyle='rgba(100,150,200,0.25)'; ctx.fillRect(x,y,T,2);
+        ctx.fillStyle='rgba(100,150,200,0.08)'; ctx.fillRect(x,y,2,T);
+        ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y+T-2,T,2);
+        ctx.strokeStyle='rgba(50,80,120,0.5)'; ctx.lineWidth=0.7;
+        ctx.beginPath(); ctx.moveTo(x,y+T/2); ctx.lineTo(x+T,y+T/2); ctx.stroke();
+        var pc=palColors[(c*7+r*3)%palColors.length];
+        var pw=T*0.6, ph=T*0.3, ppx=x+(T-pw)/2, ppy=y+T*0.12;
+        ctx.fillStyle=pc; ctx.globalAlpha=0.65; ctx.fillRect(ppx,ppy,pw,ph); ctx.globalAlpha=1;
+        ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(ppx,ppy,pw,3);
+        var pc2=palColors[(c*5+r*9)%palColors.length];
+        ctx.fillStyle=pc2; ctx.globalAlpha=0.5; ctx.fillRect(ppx,ppy+T*0.37,pw,ph); ctx.globalAlpha=1;
+        ctx.strokeStyle='rgba(20,40,70,0.8)'; ctx.lineWidth=0.5; ctx.strokeRect(x,y,T,T);
+      }
+    }
+    // Structural rails
+    ctx.fillStyle='rgba(60,100,150,0.3)';
+    ctx.fillRect(cx2(c0),cy2(r0),3,cy2(r1+1)-cy2(r0));
+    ctx.fillRect(cx2(c1+1)-3,cy2(r0),3,cy2(r1+1)-cy2(r0));
+  });
+}
+
+function drawObstacles(){
+  OBSTACLES.forEach(function(key){
+    var pts=key.split(','), c=+pts[0], r=+pts[1];
+    var x=cx2(c), y=cy2(r), T=tileSize, f=animTick*0.06;
+    ctx.save(); ctx.beginPath(); ctx.rect(x,y,T,T); ctx.clip();
+    ctx.fillStyle='rgba(244,63,94,0.18)'; ctx.fillRect(x,y,T,T);
+    ctx.strokeStyle='rgba(245,158,11,0.6)'; ctx.lineWidth=5;
+    for(var i=-T;i<T*2;i+=12){
+      ctx.beginPath(); ctx.moveTo(x+i,y); ctx.lineTo(x+i+T,y+T); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle='rgba(244,63,94,'+(0.75+0.25*Math.sin(f))+')'; ctx.lineWidth=2;
+    ctx.strokeRect(x+1,y+1,T-2,T-2);
+    ctx.fillStyle='rgba(244,63,94,0.9)';
+    ctx.font='bold '+Math.floor(T*0.44)+'px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('\uD83D\uDEAB', x+T/2, y+T/2);
+  });
+}
+
+function drawRobotPath(robot){
+  if(!robot.path||robot.path.length<1) return;
+  var T=tileSize, col=robot.color||'#06b6d4';
+  var segs=[{col:robot.px,row:robot.py}].concat(robot.path);
+  ctx.save(); ctx.globalAlpha=0.25; ctx.setLineDash([3,6]); ctx.lineWidth=1.5; ctx.strokeStyle=col;
+  ctx.beginPath();
+  segs.forEach(function(nd,i){
+    var nx=nd.col*T+T/2, ny=nd.row*T+T/2;
+    if(i===0) ctx.moveTo(nx,ny); else ctx.lineTo(nx,ny);
+  });
+  ctx.stroke(); ctx.globalAlpha=1;
+  robot.path.forEach(function(nd){
+    var nx=nd.col*T+T/2, ny=nd.row*T+T/2;
+    ctx.fillStyle=col; ctx.globalAlpha=0.3+0.1*Math.sin(animTick*0.08);
+    ctx.beginPath(); ctx.arc(nx,ny,2,0,Math.PI*2); ctx.fill();
+  });
+  ctx.globalAlpha=1; ctx.setLineDash([]); ctx.restore();
+}
+
+function drawRobot(robot){
+  var T=tileSize;
+  var RX=robot.px*T+T/2, RY=robot.py*T+T/2;
+  var R=T*0.34;
+
+  // Yield ring
+  if(robot.yieldTimer>0){
+    ctx.save();
+    ctx.strokeStyle='rgba(245,158,11,'+(0.5+0.5*Math.sin(animTick*0.2))+')';
+    ctx.lineWidth=2; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.arc(RX,RY,R*1.6,0,Math.PI*2); ctx.stroke();
+    ctx.setLineDash([]); ctx.restore();
+  }
+
+  ctx.save(); ctx.translate(RX,RY); ctx.rotate(robot.angle);
+
+  // Headlight cone
+  if(!robot.broken && robot.state!=='DOCKING'){
+    var lg=ctx.createRadialGradient(0,-R*0.5,0,0,-R*0.5,R*2.2);
+    lg.addColorStop(0,'rgba(255,255,200,0.12)'); lg.addColorStop(1,'transparent');
+    ctx.fillStyle=lg;
+    ctx.beginPath(); ctx.moveTo(0,-R*0.4); ctx.lineTo(-R*0.7,-R*2.6); ctx.lineTo(R*0.7,-R*2.6); ctx.closePath(); ctx.fill();
+  }
+
+  ctx.shadowColor=robot.broken?'#f43f5e':robot.color; ctx.shadowBlur=robot.broken?18:8;
+
+  var bg=ctx.createLinearGradient(-R,-R,R,R);
+  if(robot.broken){ bg.addColorStop(0,'#3a0d18'); bg.addColorStop(1,'#220810'); }
+  else if(robot.state==='DOCKING'||robot.state==='IDLE'){ bg.addColorStop(0,'#1c1800'); bg.addColorStop(1,'#0e0e00'); }
+  else { bg.addColorStop(0,'#0c2030'); bg.addColorStop(1,'#05111c'); }
+  ctx.fillStyle=bg;
+  ctx.beginPath(); ctx.roundRect(-R,-R,R*2,R*2,R*0.3); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.strokeStyle=robot.broken?'#f43f5e':robot.color; ctx.lineWidth=1.5; ctx.stroke();
+
+  ctx.fillStyle='rgba(20,40,60,0.9)';
+  ctx.fillRect(-R,-R*0.85,R*0.2,R*1.7); ctx.fillRect(R*0.8,-R*0.85,R*0.2,R*1.7);
+  ctx.fillStyle=robot.broken?'rgba(244,63,94,0.4)':'rgba(100,180,220,0.2)';
+  ctx.fillRect(-R*0.8,-R-2,R*1.6,3);
+
+  if(!robot.broken){
+    var la=0.7+0.3*Math.sin(animTick*0.1);
+    ctx.fillStyle='rgba(255,255,180,'+la+')';
+    ctx.beginPath(); ctx.arc(-R*0.5,-R*0.85,R*0.13,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( R*0.5,-R*0.85,R*0.13,0,Math.PI*2); ctx.fill();
+  }
+
+  ctx.fillStyle=robot.broken?'#600018':'#002030';
+  ctx.beginPath(); ctx.arc(0,-R*0.15,R*0.22,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle=robot.broken?'#f43f5e':robot.color; ctx.lineWidth=1; ctx.stroke();
+
+  if(robot.hasCargo){
+    var cs=R*0.72;
+    ctx.shadowColor='#10b981'; ctx.shadowBlur=8;
+    ctx.fillStyle='#1a3520'; ctx.strokeStyle='#10b981'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.roundRect(-cs/2,-cs/2,cs,cs,2); ctx.fill(); ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle='rgba(16,185,129,0.4)'; ctx.lineWidth=0.7;
+    ctx.beginPath(); ctx.moveTo(-cs/2,0); ctx.lineTo(cs/2,0); ctx.moveTo(0,-cs/2); ctx.lineTo(0,cs/2); ctx.stroke();
+  }
+
+  ctx.restore();
+
+  var hY=RY-R*1.65-T*0.12;
+  ctx.save();
+  ctx.font='bold '+Math.max(7,Math.floor(T*0.15))+'px JetBrains Mono,monospace';
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillStyle=robot.broken?'#f43f5e':robot.color;
+  ctx.shadowColor=robot.color; ctx.shadowBlur=4;
+  ctx.fillText('AMR-'+String(robot.id).padStart(2,'0'), RX, hY);
+  ctx.restore();
+  ctx.save();
+  ctx.font='bold '+Math.max(5,Math.floor(T*0.11))+'px JetBrains Mono,monospace';
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillStyle=stateColor(robot.state, robot.broken);
+  ctx.fillText(robot.broken?'BROKEN':(robot.yieldTimer>0?'YIELD':robot.state), RX, hY-Math.floor(T*0.15)-1);
+  ctx.restore();
+
+  var bw=R*1.8, bh=3, bx=RX-bw/2, by=RY+R+4;
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx-1,by-1,bw+2,bh+2);
+  ctx.fillStyle=batColor(robot.battery); ctx.fillRect(bx,by,bw*(robot.battery/100),bh);
+}
+
+function stateColor(state, broken){
+  if(broken) return '#f43f5e';
+  var m={IDLE:'#94a3b8',DISPATCHED:'#06b6d4',LOADING:'#06b6d4',CARRYING:'#10b981',UNLOADING:'#10b981',RETURNING:'#f59e0b',DOCKING:'#f59e0b'};
+  return m[state]||'#94a3b8';
+}
+function batColor(pct){ return pct>60?'#10b981':pct>30?'#f59e0b':'#f43f5e'; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. SIM TICK
+// ─────────────────────────────────────────────────────────────────────────────
+var MOVE_SPEED=0.07, DWELL_LOAD=1200, DWELL_UNLOAD=1000, LOW_BAT=35, CHARGE_RATE=0.18, MIN_DIST=0.92;
+var lastTick=performance.now();
+
+function planTo(robot, tc, tr){
+  var sc=Math.round(robot.px), sr=Math.round(robot.py);
+  var path=aStar(sc,sr,tc,tr,robot.id,false);
+  robot.path=(path&&path.length>0)?path:[];
+}
+
+function vacantCharger(robot){
+  var busy=new Set();
+  robots.forEach(function(r){
+    if(r.id!==robot.id&&(r.state==='DOCKING'||r.state==='IDLE')&&r.chargerCell)
+      busy.add(r.chargerCell.col+','+r.chargerCell.row);
+  });
+  var best=null, bestD=Infinity;
+  CHARGER_CELLS.forEach(function(c){
+    if(busy.has(c.col+','+c.row)) return;
+    var d=Math.abs(c.col-robot.px)+Math.abs(c.row-robot.py);
+    if(d<bestD){bestD=d;best=c;}
+  });
+  return best||CHARGER_CELLS[0];
+}
+
+function arrived(robot){
+  var c=Math.round(robot.px), r=Math.round(robot.py);
+  if(robot.state==='DISPATCHED'){
+    var atPickup=PICKUP_BAYS.some(function(p){return p.col===c&&p.row===r;});
+    if(atPickup){
+      if(!isStationFree(c,r,robot.id)){
+        planTo(robot, Math.max(0,c-1), r); return;
+      }
+      lockStation(c,r,robot.id);
+      robot.state='LOADING'; robot.dwellTimer=DWELL_LOAD;
+      logEvent('AMR-'+String(robot.id).padStart(2,'0')+' LOADING at Pickup Bay\u2026','info');
+    } else if(robot.mission){
+      planTo(robot, robot.mission.pickup.col, robot.mission.pickup.row);
+    }
+  } else if(robot.state==='CARRYING'){
+    var atDrop=DROP_BAYS.some(function(p){return p.col===c&&p.row===r;});
+    if(atDrop){
+      if(!isStationFree(c,r,robot.id)){
+        planTo(robot, Math.max(0,c-2), r); return;
+      }
+      lockStation(c,r,robot.id);
+      robot.state='UNLOADING'; robot.dwellTimer=DWELL_UNLOAD;
+      logEvent('AMR-'+String(robot.id).padStart(2,'0')+' UNLOADING at Drop Bay\u2026','info');
+    } else if(robot.mission){
+      planTo(robot, robot.mission.drop.col, robot.mission.drop.row);
+    }
+  } else if(robot.state==='RETURNING'){
+    robot.state='DOCKING'; robot.path=[];
+    if(robot.chargerCell) lockStation(robot.chargerCell.col, robot.chargerCell.row, robot.id);
+    logEvent('AMR-'+String(robot.id).padStart(2,'0')+' docked. Charging\u2026','info');
+  }
+}
+
+function tickRobot(robot, dt){
+  if(robot.broken) return;
+
+  if(robot.yieldTimer>0){
+    robot.yieldTimer-=dt; if(robot.yieldTimer<0) robot.yieldTimer=0; return;
+  }
+
+  if(robot.dwellTimer>0){
+    robot.dwellTimer-=dt;
+    if(robot.dwellTimer<=0){
+      robot.dwellTimer=0;
+      var pc=Math.round(robot.px), pr=Math.round(robot.py);
+      if(robot.state==='LOADING'){
+        unlockStation(pc,pr,robot.id);
+        robot.hasCargo=true; robot.state='CARRYING';
+        if(robot.mission){
+          planTo(robot, robot.mission.drop.col, robot.mission.drop.row);
+          logEvent('AMR-'+String(robot.id).padStart(2,'0')+' CARRYING '+robot.mission.label+' \u2192 Drop Bay','success');
+        }
+      } else if(robot.state==='UNLOADING'){
+        unlockStation(pc,pr,robot.id);
+        robot.hasCargo=false; ordersCompleted++;
+        logEvent('AMR-'+String(robot.id).padStart(2,'0')+' delivered '+(robot.mission?robot.mission.label:'')+'. Total: '+ordersCompleted,'success');
+        if(robot.battery<LOW_BAT){
+          var ch=vacantCharger(robot); robot.state='RETURNING'; robot.chargerCell=ch;
+          planTo(robot,ch.col,ch.row);
+          logEvent('AMR-'+String(robot.id).padStart(2,'0')+' low bat \u2192 Charger','warn');
+        } else {
+          robot.mission=null; robot.state='IDLE';
+          (function(rb){ setTimeout(function(){ if(rb.state==='IDLE'&&!rb.broken) dispatch(rb); },1200); })(robot);
+        }
+      }
+    }
+    return;
+  }
+
+  if(robot.path&&robot.path.length>0){
+    var tgt=robot.path[0], tc=tgt.col, tr=tgt.row;
+
+    // Collision guard
+    var blocker=null;
+    for(var i=0;i<robots.length;i++){
+      var rb=robots[i];
+      if(rb.id===robot.id||rb.broken) continue;
+      if(Math.abs(rb.px-tc)<0.52&&Math.abs(rb.py-tr)<0.52){blocker=rb;break;}
+    }
+    if(blocker){
+      var myCc=Math.round(robot.px), myCr=Math.round(robot.py);
+      var edgeSwap=blocker.path&&blocker.path.length>0&&
+        Math.abs(blocker.path[0].col-myCc)<0.5&&Math.abs(blocker.path[0].row-myCr)<0.5;
+      var weHavePriority=robot.priority<blocker.priority;
+      if(weHavePriority&&!edgeSwap){
+        blocker.yieldTimer=280;
+      } else {
+        robot.yieldTimer=200+Math.random()*120;
+        if(edgeSwap){
+          var DIRS2=[[0,-1],[0,1],[-1,0],[1,0]];
+          var moved=false;
+          for(var d=0;d<DIRS2.length;d++){
+            var nc2=myCc+DIRS2[d][0], nr2=myCr+DIRS2[d][1];
+            if(nc2===tc&&nr2===tr) continue;
+            if(isPassable(nc2,nr2,robot.id,false)){
+              robot.path=[{col:nc2,row:nr2}].concat(robot.path);
+              moved=true; break;
+            }
+          }
+          if(!moved) robot.path=[];
+        }
+        return;
+      }
+    }
+
+    // Proximity safety
+    var tooClose=false;
+    for(var j=0;j<robots.length;j++){
+      var rb2=robots[j];
+      if(rb2.id===robot.id||rb2.broken) continue;
+      var ddx=rb2.px-tc, ddy=rb2.py-tr;
+      if(Math.sqrt(ddx*ddx+ddy*ddy)<MIN_DIST){tooClose=true;break;}
+    }
+    if(tooClose){ robot.yieldTimer=180; return; }
+
+    var dx=tc-robot.px, dy=tr-robot.py, dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist>0.05){
+      var ta=Math.atan2(dy,dx)+Math.PI/2;
+      var da=ta-robot.angle;
+      while(da>Math.PI) da-=Math.PI*2;
+      while(da<-Math.PI) da+=Math.PI*2;
+      robot.angle+=da*0.28;
+      var step=Math.min(MOVE_SPEED,dist);
+      robot.px+=(dx/dist)*step; robot.py+=(dy/dist)*step;
+    } else {
+      robot.px=tc; robot.py=tr; robot.path.shift();
+      if(robot.path.length===0) arrived(robot);
+    }
+  }
+
+  if(robot.state!=='DOCKING'&&robot.state!=='IDLE'){
+    robot.battery=Math.max(0,robot.battery-0.022);
+    if(robot.battery===0){robot.broken=true;robot.state='BROKEN';logEvent('AMR-'+String(robot.id).padStart(2,'0')+' BATTERY DEAD!','danger');return;}
+  }
+  if(robot.state==='DOCKING'){
+    robot.battery=Math.min(100,robot.battery+CHARGE_RATE);
+    if(robot.battery>=99.9){
+      robot.battery=100; robot.state='IDLE'; robot.path=[];
+      if(robot.chargerCell) unlockStation(robot.chargerCell.col,robot.chargerCell.row,robot.id);
+      logEvent('AMR-'+String(robot.id).padStart(2,'0')+' fully charged. Ready.','success');
+      (function(rb){ setTimeout(function(){ if(rb.state==='IDLE'&&!rb.broken) dispatch(rb); },700); })(robot);
+    }
+  }
+}
+
+function dispatch(robot){
+  if(robot.broken||robot.state!=='IDLE') return;
+  var m=newMission(); robot.mission=m; robot.state='DISPATCHED';
+  planTo(robot,m.pickup.col,m.pickup.row);
+  logEvent('AMR-'+String(robot.id).padStart(2,'0')+' dispatched \u2192 '+m.label,'info');
+}
+
+function simTick(){
+  var now=performance.now(), dt=now-lastTick; lastTick=now;
+  rebuildOccupancy(); totalTicks++;
+  robots.forEach(function(r){ tickRobot(r,dt); });
+  // Replan any bot whose path hits a newly blocked cell
+  robots.forEach(function(rb){
+    if(rb.path&&rb.path.length>0){
+      var blocked=rb.path.some(function(nd){ return !isPassable(nd.col,nd.row,rb.id,false); });
+      if(blocked){ var last=rb.path[rb.path.length-1]; planTo(rb,last.col,last.row); }
+    }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. RENDER LOOP
+// ─────────────────────────────────────────────────────────────────────────────
+function render(){
+  animTick++;
+  ctx.clearRect(0,0,GRID_W*tileSize,GRID_H*tileSize);
+  drawFloor(); drawChargers(); drawPickupBays(); drawDropBays();
+  drawShelves(); drawObstacles();
+  robots.forEach(function(r){ if(!r.broken) drawRobotPath(r); });
+  robots.forEach(function(r){ drawRobot(r); });
+  requestAnimationFrame(render);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. CANVAS INTERACTION
+// ─────────────────────────────────────────────────────────────────────────────
+canvas.addEventListener('click', function(e){
+  var rect=canvas.getBoundingClientRect();
+  var px=e.clientX-rect.left, py=e.clientY-rect.top;
+  var c=Math.floor(px/tileSize), r=Math.floor(py/tileSize);
+
+  var hit=null;
+  for(var i=0;i<robots.length;i++){
+    var rb=robots[i];
+    if(Math.abs(rb.px-c)<0.65&&Math.abs(rb.py-r)<0.65){hit=rb;break;}
+  }
+  if(hit){ selectedId=hit.id; logEvent('Selected AMR-'+String(hit.id).padStart(2,'0')+' for diagnostics.','info'); return; }
+
+  var key=c+','+r;
+  if(SHELF_SET.has(key)) return;
+  if(!inBounds(c,r)) return;
+  if(CHARGER_CELLS.some(function(x){return x.col===c&&x.row===r;})) return;
+  if(PICKUP_BAYS.some(function(x){return x.col===c&&x.row===r;})) return;
+  if(DROP_BAYS.some(function(x){return x.col===c&&x.row===r;})) return;
+
+  if(OBSTACLES.has(key)){
+    OBSTACLES.delete(key);
+    WALKABLE[cellIdx(c,r)]=1;
+    logEvent('Barrier lifted at ('+c+','+r+').','success');
+  } else {
+    OBSTACLES.add(key);
+    WALKABLE[cellIdx(c,r)]=0;
+    logEvent('\u26A0 Hazard barrier at ('+c+','+r+')! Re-routing\u2026','danger');
+    robots.forEach(function(rb){
+      if(rb.path&&rb.path.slice(0,5).some(function(nd){return nd.col===c&&nd.row===r;})){
+        var last=rb.path[rb.path.length-1];
+        planTo(rb,last.col,last.row);
+      }
+    });
+    sendWsCmd({action:'add_obstacle',x:c,y:r});
+  }
+});
+
+var tooltip=document.getElementById('tooltip');
+canvas.addEventListener('mousemove',function(e){
+  var rect=canvas.getBoundingClientRect();
+  var px=(e.clientX-rect.left)/tileSize, py=(e.clientY-rect.top)/tileSize;
+  var hit=null;
+  for(var i=0;i<robots.length;i++){
+    var rb=robots[i];
+    if(Math.abs(rb.px-px)<0.7&&Math.abs(rb.py-py)<0.7){hit=rb;break;}
+  }
+  if(hit){
+    document.getElementById('tt-id').textContent='AMR-'+String(hit.id).padStart(2,'0');
+    document.getElementById('tt-state').textContent=hit.broken?'BROKEN':(hit.yieldTimer>0?'YIELDING':hit.state);
+    document.getElementById('tt-task').textContent=hit.mission?hit.mission.label:'\u2014';
+    document.getElementById('tt-bat').textContent='Battery: '+hit.battery.toFixed(1)+'%';
+    tooltip.style.display='block';
+    tooltip.style.left=(e.clientX+14)+'px';
+    tooltip.style.top=(e.clientY-10)+'px';
+  } else { tooltip.style.display='none'; }
+});
+canvas.addEventListener('mouseleave',function(){ tooltip.style.display='none'; });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. SIDEBAR
+// ─────────────────────────────────────────────────────────────────────────────
+function updateSidebar(){
+  var sel=null;
+  for(var i=0;i<robots.length;i++){if(robots[i].id===selectedId){sel=robots[i];break;}}
+  if(!sel&&robots.length>0) sel=robots[0];
+  if(!sel) return;
+
+  document.getElementById('sel-id').textContent='AMR-'+String(sel.id).padStart(2,'0');
+  var stEl=document.getElementById('sel-state');
+  stEl.textContent=sel.broken?'BROKEN':(sel.yieldTimer>0?'YIELDING':sel.state);
+  stEl.style.color=stateColor(sel.state,sel.broken);
+  var deg=((sel.angle*180/Math.PI)%360+360)%360;
+  document.getElementById('sel-heading').textContent=Math.round(deg)+'\u00B0 '+HEADINGS[Math.round(deg/45)%8];
+  document.getElementById('sel-cargo').textContent=sel.hasCargo?'\uD83D\uDCE6 LOADED':'\u2014 EMPTY \u2014';
+  document.getElementById('sel-task').textContent=sel.mission?sel.mission.label:'\u2014';
+  var bat=sel.battery;
+  document.getElementById('sel-bat-pct').textContent=bat.toFixed(1)+'%';
+  var bar=document.getElementById('sel-bat-bar');
+  bar.style.width=bat+'%'; bar.style.background=batColor(bat);
+
+  document.getElementById('kpi-collisions').textContent=String(collisionCount);
+  document.getElementById('kpi-orders').textContent=String(ordersCompleted);
+  var eff=0;
+  if(totalTicks>0&&ordersCompleted>0) eff=Math.max(0,Math.round((1-(totalTicks/ordersCompleted/40))*100));
+  document.getElementById('kpi-eff').textContent=eff+'%';
+  document.getElementById('hdr-robots').textContent=robots.length+' AMRs';
+
+  var list=document.getElementById('fleet-list');
+  list.replaceChildren();
+  robots.forEach(function(rb){
+    var div=document.createElement('div');
+    div.setAttribute('role','button'); div.setAttribute('tabindex','0');
+    div.style.cursor='pointer';
+    div.className='p-1.5 rounded border transition-all '+(rb.id===selectedId?'border-cyan-500/40 bg-slate-800/60':'border-slate-800 hover:border-slate-700');
+
+    var row1=document.createElement('div');
+    row1.className='flex items-center justify-between';
+
+    var dot=document.createElement('div');
+    dot.style.cssText='width:7px;height:7px;border-radius:50%;background:'+(rb.broken?'#f43f5e':rb.color)+';margin-right:5px;flex-shrink:0;box-shadow:0 0 5px '+(rb.broken?'#f43f5e':rb.color);
+
+    var idSp=document.createElement('span');
+    idSp.className='mono text-[10px] font-bold flex-1';
+    idSp.style.color=rb.broken?'#f43f5e':rb.color;
+    idSp.textContent='AMR-'+String(rb.id).padStart(2,'0');
+
+    var stateMap={IDLE:'badge-slate',DISPATCHED:'badge-cyan',LOADING:'badge-cyan',CARRYING:'badge-emerald',UNLOADING:'badge-emerald',RETURNING:'badge-amber',DOCKING:'badge-amber'};
+    var bdg=document.createElement('span');
+    bdg.className='badge '+(rb.broken?'badge-rose':(rb.yieldTimer>0?'badge-amber':(stateMap[rb.state]||'badge-slate')));
+    bdg.textContent=rb.broken?'BROKEN':(rb.yieldTimer>0?'YIELD':rb.state.slice(0,6));
+
+    row1.appendChild(dot); row1.appendChild(idSp); row1.appendChild(bdg);
+
+    var row2=document.createElement('div');
+    row2.className='mt-1 flex items-center gap-1.5';
+    var bbar=document.createElement('div');
+    bbar.className='flex-1 h-1 rounded-full'; bbar.style.background='rgba(148,163,184,0.1)';
+    var bfill=document.createElement('div');
+    bfill.style.cssText='width:'+rb.battery.toFixed(0)+'%;height:100%;border-radius:9999px;background:'+batColor(rb.battery)+';transition:width .4s ease';
+    bbar.appendChild(bfill);
+    var btxt=document.createElement('span');
+    btxt.className='mono text-[9px]'; btxt.style.color=batColor(rb.battery);
+    btxt.textContent=rb.battery.toFixed(0)+'%';
+    row2.appendChild(bbar); row2.appendChild(btxt);
+
+    div.appendChild(row1); div.appendChild(row2);
+    (function(id){ div.addEventListener('click',function(){selectedId=id;}); })(rb.id);
+    (function(id){ div.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){selectedId=id;}}); })(rb.id);
+    list.appendChild(div);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. LOG
+// ─────────────────────────────────────────────────────────────────────────────
+var logCnt=0;
+function logEvent(msg, level){
+  level=level||'info';
+  var term=document.getElementById('log-terminal');
+  var t=new Date().toLocaleTimeString('en-IN',{hour12:false});
+  var colors={info:'#94a3b8',warn:'#f59e0b',danger:'#f43f5e',success:'#10b981'};
+  var entry=document.createElement('div');
+  entry.className='log-entry leading-relaxed'; entry.style.color=colors[level]||colors.info;
+  var ts=document.createElement('span');
+  ts.style.color='rgba(148,163,184,0.4)'; ts.textContent='['+t+'] ';
+  var ms=document.createElement('span');
+  ms.textContent=String(msg).slice(0,200);
+  entry.appendChild(ts); entry.appendChild(ms);
+  term.appendChild(entry); term.scrollTop=term.scrollHeight;
+  if(++logCnt>100&&term.firstChild) term.removeChild(term.firstChild);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. CONTROLS
+// ─────────────────────────────────────────────────────────────────────────────
+document.getElementById('btn-spawn').addEventListener('click',function(){
+  if(robots.length>=16){ logEvent('Fleet capacity reached (16 AMRs max).','warn'); return; }
+  var occupied=new Set();
+  robots.forEach(function(r){occupied.add(Math.round(r.px)+','+Math.round(r.py));});
+  var spawnCell=null;
+  for(var i=0;i<CHARGER_CELLS.length;i++){
+    var cc=CHARGER_CELLS[i];
+    if(!occupied.has(cc.col+','+cc.row)){spawnCell={col:cc.col,row:cc.row};break;}
+  }
+  if(!spawnCell){
+    for(var attempt=0;attempt<300;attempt++){
+      var c=Math.floor(Math.random()*GRID_W), r=Math.floor(Math.random()*GRID_H);
+      var k=c+','+r;
+      if(WALKABLE[cellIdx(c,r)]&&!SHELF_SET.has(k)&&!occupied.has(k)){spawnCell={col:c,row:r};break;}
+    }
+  }
+  if(!spawnCell){ logEvent('No free spawn cell.','warn'); return; }
+  var id=nextRobotId++;
+  var rb=makeRobot(id,spawnCell.col,spawnCell.row);
+  robots.push(rb);
+  logEvent('AMR-'+String(id).padStart(2,'0')+' spawned at ('+spawnCell.col+','+spawnCell.row+').','success');
+  (function(r){setTimeout(function(){if(r.state==='IDLE'&&!r.broken)dispatch(r);},600);})(rb);
+  sendWsCmd({action:'spawn_robot'});
+});
+
+document.getElementById('btn-order').addEventListener('click',function(){
+  var idle=robots.filter(function(r){return !r.broken&&r.state==='IDLE';});
+  if(idle.length>0){
+    dispatch(idle[Math.floor(Math.random()*idle.length)]);
+    sendWsCmd({action:'add_task',pickup:[PICKUP_BAYS[0].col,PICKUP_BAYS[0].row],drop:[DROP_BAYS[0].col,DROP_BAYS[0].row]});
+  } else { logEvent('No idle AMRs available.','warn'); }
+});
+
+document.getElementById('btn-recall').addEventListener('click',function(){
+  var used=new Set();
+  robots.forEach(function(rb){
+    if(rb.broken||rb.state==='DOCKING') return;
+    rb.hasCargo=false; rb.mission=null;
+    var ch=null;
+    for(var i=0;i<CHARGER_CELLS.length;i++){
+      var cc=CHARGER_CELLS[i], ck=cc.col+','+cc.row;
+      if(!used.has(ck)){ch=cc;used.add(ck);break;}
+    }
+    if(!ch) ch=CHARGER_CELLS[0];
+    rb.state='RETURNING'; rb.chargerCell=ch; planTo(rb,ch.col,ch.row);
+  });
+  logEvent('RECALL ORDER: All AMRs routing to dedicated chargers.','warn');
+});
+
+document.getElementById('btn-break').addEventListener('click',function(){
+  var sel=null;
+  for(var i=0;i<robots.length;i++){if(robots[i].id===selectedId){sel=robots[i];break;}}
+  if(!sel){logEvent('Select a unit first.','warn');return;}
+  sel.broken=!sel.broken;
+  if(sel.broken){
+    sel.path=[]; sel.state='BROKEN';
+    logEvent('\uD83D\uDCA5 AMR-'+String(sel.id).padStart(2,'0')+' EMERGENCY HALT \u2014 offline.','danger');
+    sendWsCmd({action:'kill_robot',robot_id:sel.id});
+  } else {
+    sel.state='IDLE'; sel.battery=Math.max(sel.battery,30);
+    logEvent('AMR-'+String(sel.id).padStart(2,'0')+' rebooted. Standing by.','success');
+    (function(r){setTimeout(function(){if(r.state==='IDLE'&&!r.broken)dispatch(r);},1000);})(sel);
+  }
+});
+
+document.getElementById('btn-clear').addEventListener('click',function(){
+  OBSTACLES.forEach(function(key){
+    var pts=key.split(','), c=+pts[0], r=+pts[1];
+    if(!SHELF_SET.has(key)&&inBounds(c,r)) WALKABLE[cellIdx(c,r)]=1;
+  });
+  OBSTACLES.clear();
+  logEvent('All tactical hazard barriers cleared.','success');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14. WEBSOCKET
+// ─────────────────────────────────────────────────────────────────────────────
+var ws=null;
+function connectWS(){
+  try {
+    ws=new WebSocket('ws://localhost:8000/ws');
+    ws.addEventListener('open',function(){
+      var b=document.getElementById('ws-badge');
+      b.className=b.className.replace('badge-amber','badge-emerald');
+      document.getElementById('ws-text').textContent='LIVE P2P TELEMETRY';
+      document.getElementById('ws-dot').style.background='#10b981';
+      logEvent('WebSocket connected to Python AMR engine.','success');
+    });
+    ws.addEventListener('message',function(e){
+      var data; try{data=JSON.parse(e.data);}catch(err){return;}
+      if(Array.isArray(data.robots)){
+        data.robots.forEach(function(br){
+          var numId=parseInt(String(br.id).replace(/\D/g,''),10);
+          var loc=null;
+          for(var i=0;i<robots.length;i++){if(robots[i].id===numId){loc=robots[i];break;}}
+          if(!loc) return;
+          if(typeof br.x==='number') loc.px=br.x;
+          if(typeof br.y==='number') loc.py=br.y;
+          if(typeof br.battery==='number') loc.battery=Math.max(0,Math.min(100,br.battery));
+          if(typeof br.state==='string') loc.state=String(br.state).slice(0,32);
+          if(typeof br.task==='string'&&loc.mission) loc.mission.label=String(br.task).slice(0,50);
+        });
+      }
+      if(data.metrics&&typeof data.metrics.collisions==='number'){
+        collisionCount=data.metrics.collisions;
+      }
+    });
+    ws.addEventListener('close',function(){
+      var b=document.getElementById('ws-badge');
+      b.className=b.className.replace('badge-emerald','badge-amber');
+      document.getElementById('ws-text').textContent='OFFLINE \u00B7 STANDALONE SIM';
+      document.getElementById('ws-dot').style.background='#f59e0b';
+      setTimeout(connectWS,3000);
+    });
+    ws.addEventListener('error',function(){ws.close();});
+  } catch(err){setTimeout(connectWS,4000);}
+}
+function sendWsCmd(cmd){ if(ws&&ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. CLOCK
+// ─────────────────────────────────────────────────────────────────────────────
+function updateClock(){
+  document.getElementById('hdr-time').textContent=new Date().toLocaleTimeString('en-IN',{hour12:false});
+}
+setInterval(updateClock,1000); updateClock();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. KICK-OFF
+// ─────────────────────────────────────────────────────────────────────────────
+robots.forEach(function(r,i){ setTimeout(function(){dispatch(r);},400+i*600); });
+setInterval(simTick,50);
+setInterval(updateSidebar,200);
+requestAnimationFrame(render);
+connectWS();
+
+logEvent('FLEET-X Digital Twin v3.2.2 initialized. 28\u00D720 grid active.','success');
+logEvent('Collision mutex + A* navigation engaged. Dispatching swarm\u2026','info');
+</script>
+</body>
+</html>
