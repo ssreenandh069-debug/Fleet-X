@@ -336,7 +336,7 @@ function aStar(sc, sr, ec, er, robotId, ignoreStations){
   fScore.set(sk,Math.abs(sc-ec)+Math.abs(sr-er));
   open.add(sk);
   var itr=0;
-  while(open.size>0 && itr++<6000){
+  while(open.size>0 && itr++<500){
     var cur=null, curF=Infinity;
     open.forEach(function(k){ var f=fScore.get(k)||Infinity; if(f<curF){curF=f;cur=k;} });
     var pts=cur.split(','), cc=+pts[0], cr=+pts[1];
@@ -362,7 +362,6 @@ function aStar(sc, sr, ec, er, robotId, ignoreStations){
       }
     }
   }
-  if(!ignoreStations) return aStar(sc,sr,ec,er,robotId,true);
   return null;
 }
 
@@ -391,7 +390,7 @@ var selectedId=1;
 
 function makeRobot(id, sc, sr){
   return {
-    id:id, px:sc+0.0, py:sr+0.0, angle:0,
+    id:id, px:sc+0.0, py:sr+0.0, targetX:sc+0.0, targetY:sr+0.0, angle:0,
     state:'IDLE', battery:75+Math.random()*24,
     hasCargo:false, mission:null, path:[],
     dwellTimer:0, chargerCell:null, broken:false,
@@ -894,20 +893,45 @@ function dispatch(robot){
   logEvent('AMR-'+String(robot.id).padStart(2,'0')+' dispatched \u2192 '+m.label,'info');
 }
 
+var isOnline = false;
+
 function simTick(){
   var now=performance.now(), dt=now-lastTick; lastTick=now;
-  rebuildOccupancy(); totalTicks++;
-  var isOnline = (ws && ws.readyState === WebSocket.OPEN);
-  if(!isOnline) {
-    robots.forEach(function(r){ tickRobot(r,dt); });
-    // Replan any bot whose path hits a newly blocked cell
+  totalTicks++;
+
+  if(isOnline){
+    // High-performance 60fps Digital Twin motion interpolation
     robots.forEach(function(rb){
-      if(rb.path&&rb.path.length>0){
-        var blocked=rb.path.some(function(nd){ return !isPassable(nd.col,nd.row,rb.id,false); });
-        if(blocked){ var last=rb.path[rb.path.length-1]; planTo(rb,last.col,last.row); }
+      if(typeof rb.targetX==='number' && typeof rb.targetY==='number'){
+        var dx=rb.targetX-rb.px, dy=rb.targetY-rb.py;
+        var dist=Math.sqrt(dx*dx+dy*dy);
+        if(dist>0.01){
+          var step=Math.min(dist, 0.22);
+          rb.px += (dx/dist)*step;
+          rb.py += (dy/dist)*step;
+          var ta = Math.atan2(dy, dx) + Math.PI/2;
+          var da = ta - rb.angle;
+          while(da > Math.PI) da -= Math.PI*2;
+          while(da < -Math.PI) da += Math.PI*2;
+          rb.angle += da * 0.35;
+        } else {
+          rb.px = rb.targetX;
+          rb.py = rb.targetY;
+        }
       }
     });
+    return;
   }
+
+  // Standalone offline fallback
+  rebuildOccupancy();
+  robots.forEach(function(r){ tickRobot(r,dt); });
+  robots.forEach(function(rb){
+    if(rb.path&&rb.path.length>0){
+      var blocked=rb.path.some(function(nd){ return !isPassable(nd.col,nd.row,rb.id,false); });
+      if(blocked){ var last=rb.path[rb.path.length-1]; planTo(rb,last.col,last.row); }
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -948,18 +972,21 @@ canvas.addEventListener('click', function(e){
   if(OBSTACLES.has(key)){
     OBSTACLES.delete(key);
     WALKABLE[cellIdx(c,r)]=1;
+    sendWsCmd({action:'remove_obstacle',x:c,y:r});
     logEvent('Barrier lifted at ('+c+','+r+').','success');
   } else {
     OBSTACLES.add(key);
     WALKABLE[cellIdx(c,r)]=0;
-    logEvent('\u26A0 Hazard barrier at ('+c+','+r+')! Re-routing\u2026','danger');
-    robots.forEach(function(rb){
-      if(rb.path&&rb.path.slice(0,5).some(function(nd){return nd.col===c&&nd.row===r;})){
-        var last=rb.path[rb.path.length-1];
-        planTo(rb,last.col,last.row);
-      }
-    });
     sendWsCmd({action:'add_obstacle',x:c,y:r});
+    logEvent('\u26A0 Hazard barrier at ('+c+','+r+')! Re-routing\u2026','danger');
+    if(!isOnline){
+      robots.forEach(function(rb){
+        if(rb.path&&rb.path.slice(0,5).some(function(nd){return nd.col===c&&nd.row===r;})){
+          var last=rb.path[rb.path.length-1];
+          planTo(rb,last.col,last.row);
+        }
+      });
+    }
   }
 });
 
@@ -1080,37 +1107,38 @@ function logEvent(msg, level){
 // 13. CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
 document.getElementById('btn-spawn').addEventListener('click',function(){
-  if(robots.length>=16){ logEvent('Fleet capacity reached (16 AMRs max).','warn'); return; }
   sendWsCmd({action:'spawn_robot'});
-  logEvent('Requested new AMR spawn.','info');
+  logEvent('Spawn AMR command sent to Swarm Controller.','info');
 });
 
 document.getElementById('btn-restock').addEventListener('click',function(){
   sendWsCmd({action:'trigger_restock'});
-  logEvent('Triggered Inbound Restock.','info');
+  logEvent('Inbound Restock Shipment dispatched to swarm.','success');
 });
 
 document.getElementById('btn-order').addEventListener('click',function(){
   sendWsCmd({action:'trigger_order'});
-  logEvent('Triggered Outbound Order.','info');
+  logEvent('Customer Flash Order dispatched to swarm.','info');
 });
 
 document.getElementById('btn-recall').addEventListener('click',function(){
-  logEvent('RECALL ORDER: Not implemented in dual-loop backend yet.','warn');
+  sendWsCmd({action:'recall_all'});
+  logEvent('Recall All ordered: routing AMRs to charging docks.','warn');
 });
 
 document.getElementById('btn-break').addEventListener('click',function(){
   var sel=null;
   for(var i=0;i<robots.length;i++){if(robots[i].id===selectedId){sel=robots[i];break;}}
+  if(!sel&&robots.length>0) sel=robots[0];
   if(!sel){logEvent('Select a unit first.','warn');return;}
   sel.broken=!sel.broken;
   if(sel.broken){
     sel.path=[]; sel.state='BROKEN';
-    logEvent('\uD83D\uDCA5 AMR-'+String(sel.id).padStart(2,'0')+' EMERGENCY HALT \u2014 offline.','danger');
+    logEvent('\uD83D\uDCA5 AMR-'+String(sel.id).padStart(2,'0')+' EMERGENCY HALT ordered.','danger');
     sendWsCmd({action:'kill_robot',robot_id:sel.id});
   } else {
-    sel.state='IDLE'; sel.battery=Math.max(sel.battery,30);
     logEvent('AMR-'+String(sel.id).padStart(2,'0')+' rebooted. Standing by.','success');
+    sendWsCmd({action:'spawn_robot'});
   }
 });
 
@@ -1130,13 +1158,21 @@ document.getElementById('btn-clear').addEventListener('click',function(){
 var ws=null;
 function connectWS(){
   try {
-    ws=new WebSocket('ws://localhost:8000/ws');
+    var loc=window.location;
+    var proto=loc.protocol==='https:'?'wss:':'ws:';
+    var host=loc.host||'localhost:8000';
+    var wsUrl=proto+'//'+host+'/ws';
+
+    ws=new WebSocket(wsUrl);
     ws.addEventListener('open',function(){
+      isOnline=true;
       var b=document.getElementById('ws-badge');
-      b.className=b.className.replace('badge-amber','badge-emerald');
-      document.getElementById('ws-text').textContent='LIVE P2P TELEMETRY';
-      document.getElementById('ws-dot').style.background='#10b981';
-      logEvent('WebSocket connected to Python AMR engine.','success');
+      if(b){
+        b.className=b.className.replace('badge-amber','badge-emerald');
+        document.getElementById('ws-text').textContent='LIVE DIGITAL TWIN (CONNECTED)';
+        document.getElementById('ws-dot').style.background='#10b981';
+      }
+      logEvent('WebSocket connected to Fleet-X AMR Swarm Controller.','success');
     });
     ws.addEventListener('message',function(e){
       var data; try{data=JSON.parse(e.data);}catch(err){return;}
@@ -1151,16 +1187,24 @@ function connectWS(){
           for(var i=0;i<robots.length;i++){if(robots[i].id===numId){loc=robots[i];break;}}
           if(!loc){
              loc = makeRobot(numId, br.x||0, br.y||0);
+             loc.targetX = br.x;
+             loc.targetY = br.y;
              robots.push(loc);
              if(numId >= nextRobotId) nextRobotId = numId + 1;
           }
-          if(typeof br.x==='number') loc.px=br.x;
-          if(typeof br.y==='number') loc.py=br.y;
+          if(typeof br.x==='number' && typeof br.y==='number'){
+            loc.targetX = br.x;
+            loc.targetY = br.y;
+            var dx=br.x-loc.px, dy=br.y-loc.py;
+            if(Math.sqrt(dx*dx+dy*dy) > 2.5){
+              loc.px = br.x;
+              loc.py = br.y;
+            }
+          }
           if(typeof br.battery==='number') loc.battery=Math.max(0,Math.min(100,br.battery));
-          if(typeof br.state==='string') loc.state=String(br.state).slice(0,32);
+          if(typeof br.state==='string') loc.state=br.state;
           if(typeof br.has_cargo==='boolean') loc.hasCargo=br.has_cargo;
-          if(typeof br.task==='string'&&loc.mission) loc.mission.label=String(br.task).slice(0,50);
-          else if(typeof br.task==='string'&&!loc.mission) loc.mission={label:String(br.task).slice(0,50)};
+          if(typeof br.task==='string'&&br.task) loc.mission={label:String(br.task).slice(0,50)};
           else if(!br.task) loc.mission=null;
 
           if(Array.isArray(br.path)){
@@ -1172,6 +1216,14 @@ function connectWS(){
         shelfInventory={};
         data.inventory.forEach(function(inv){ shelfInventory[inv.pos[0]+','+inv.pos[1]]=inv.count; });
       }
+      if(Array.isArray(data.obstacles)){
+        OBSTACLES.clear();
+        data.obstacles.forEach(function(obs){
+          var key = obs[0] + ',' + obs[1];
+          OBSTACLES.add(key);
+          if(inBounds(obs[0], obs[1])) WALKABLE[cellIdx(obs[0], obs[1])] = 0;
+        });
+      }
       if(data.metrics){
         if(typeof data.metrics.collisions==='number') collisionCount=data.metrics.collisions;
         if(typeof data.metrics.total_restocked==='number') document.getElementById('kpi-restocked').textContent=data.metrics.total_restocked;
@@ -1179,14 +1231,19 @@ function connectWS(){
       }
     });
     ws.addEventListener('close',function(){
+      isOnline=false;
       var b=document.getElementById('ws-badge');
-      b.className=b.className.replace('badge-emerald','badge-amber');
-      document.getElementById('ws-text').textContent='OFFLINE \u00B7 STANDALONE SIM';
-      document.getElementById('ws-dot').style.background='#f59e0b';
-      setTimeout(connectWS,3000);
+      if(b){
+        b.className=b.className.replace('badge-emerald','badge-amber');
+        document.getElementById('ws-text').textContent='RECONNECTING...';
+        document.getElementById('ws-dot').style.background='#f59e0b';
+      }
+      setTimeout(connectWS,2000);
     });
-    ws.addEventListener('error',function(){ws.close();});
-  } catch(err){setTimeout(connectWS,4000);}
+    ws.addEventListener('error',function(){
+      if(ws) ws.close();
+    });
+  } catch(err){setTimeout(connectWS,3000);}
 }
 function sendWsCmd(cmd){ if(ws&&ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(cmd)); }
 
@@ -1201,14 +1258,14 @@ setInterval(updateClock,1000); updateClock();
 // ─────────────────────────────────────────────────────────────────────────────
 // 16. KICK-OFF
 // ─────────────────────────────────────────────────────────────────────────────
-robots.forEach(function(r,i){ setTimeout(function(){dispatch(r);},400+i*600); });
-setInterval(simTick,50);
+robots.forEach(function(r,i){ setTimeout(function(){ if(!isOnline) dispatch(r); },400+i*600); });
+setInterval(simTick,16);
 setInterval(updateSidebar,200);
 requestAnimationFrame(render);
 connectWS();
 
-logEvent('FLEET-X Digital Twin v3.2.2 initialized. 28\u00D720 grid active.','success');
-logEvent('Collision mutex + A* navigation engaged. Dispatching swarm\u2026','info');
+logEvent('FLEET-X Digital Twin initialized. 28\u00D720 grid active.','success');
+logEvent('Connecting to Fleet-X Swarm Engine WebSocket\u2026','info');
 </script>
 </body>
 </html>
