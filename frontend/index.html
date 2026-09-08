@@ -1081,27 +1081,8 @@ function logEvent(msg, level){
 // ─────────────────────────────────────────────────────────────────────────────
 document.getElementById('btn-spawn').addEventListener('click',function(){
   if(robots.length>=16){ logEvent('Fleet capacity reached (16 AMRs max).','warn'); return; }
-  var occupied=new Set();
-  robots.forEach(function(r){occupied.add(Math.round(r.px)+','+Math.round(r.py));});
-  var spawnCell=null;
-  for(var i=0;i<CHARGER_CELLS.length;i++){
-    var cc=CHARGER_CELLS[i];
-    if(!occupied.has(cc.col+','+cc.row)){spawnCell={col:cc.col,row:cc.row};break;}
-  }
-  if(!spawnCell){
-    for(var attempt=0;attempt<300;attempt++){
-      var c=Math.floor(Math.random()*GRID_W), r=Math.floor(Math.random()*GRID_H);
-      var k=c+','+r;
-      if(WALKABLE[cellIdx(c,r)]&&!SHELF_SET.has(k)&&!occupied.has(k)){spawnCell={col:c,row:r};break;}
-    }
-  }
-  if(!spawnCell){ logEvent('No free spawn cell.','warn'); return; }
-  var id=nextRobotId++;
-  var rb=makeRobot(id,spawnCell.col,spawnCell.row);
-  robots.push(rb);
-  logEvent('AMR-'+String(id).padStart(2,'0')+' spawned at ('+spawnCell.col+','+spawnCell.row+').','success');
-  (function(r){setTimeout(function(){if(r.state==='IDLE'&&!r.broken)dispatch(r);},600);})(rb);
   sendWsCmd({action:'spawn_robot'});
+  logEvent('Requested new AMR spawn.','info');
 });
 
 document.getElementById('btn-restock').addEventListener('click',function(){
@@ -1110,27 +1091,12 @@ document.getElementById('btn-restock').addEventListener('click',function(){
 });
 
 document.getElementById('btn-order').addEventListener('click',function(){
-  var idle=robots.filter(function(r){return !r.broken&&r.state==='IDLE';});
-  if(idle.length>0){
-    sendWsCmd({action:'trigger_order'});
-    logEvent('Triggered Outbound Order.','info');
-  } else { logEvent('No idle AMRs available.','warn'); }
+  sendWsCmd({action:'trigger_order'});
+  logEvent('Triggered Outbound Order.','info');
 });
 
 document.getElementById('btn-recall').addEventListener('click',function(){
-  var used=new Set();
-  robots.forEach(function(rb){
-    if(rb.broken||rb.state==='DOCKING') return;
-    rb.hasCargo=false; rb.mission=null;
-    var ch=null;
-    for(var i=0;i<CHARGER_CELLS.length;i++){
-      var cc=CHARGER_CELLS[i], ck=cc.col+','+cc.row;
-      if(!used.has(ck)){ch=cc;used.add(ck);break;}
-    }
-    if(!ch) ch=CHARGER_CELLS[0];
-    rb.state='RETURNING'; rb.chargerCell=ch; planTo(rb,ch.col,ch.row);
-  });
-  logEvent('RECALL ORDER: All AMRs routing to dedicated chargers.','warn');
+  logEvent('RECALL ORDER: Not implemented in dual-loop backend yet.','warn');
 });
 
 document.getElementById('btn-break').addEventListener('click',function(){
@@ -1145,7 +1111,6 @@ document.getElementById('btn-break').addEventListener('click',function(){
   } else {
     sel.state='IDLE'; sel.battery=Math.max(sel.battery,30);
     logEvent('AMR-'+String(sel.id).padStart(2,'0')+' rebooted. Standing by.','success');
-    (function(r){setTimeout(function(){if(r.state==='IDLE'&&!r.broken)dispatch(r);},1000);})(sel);
   }
 });
 
@@ -1155,6 +1120,7 @@ document.getElementById('btn-clear').addEventListener('click',function(){
     if(!SHELF_SET.has(key)&&inBounds(c,r)) WALKABLE[cellIdx(c,r)]=1;
   });
   OBSTACLES.clear();
+  sendWsCmd({action:'clear_obstacles'});
   logEvent('All tactical hazard barriers cleared.','success');
 });
 

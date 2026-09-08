@@ -139,6 +139,25 @@ BROADCAST_HZ   = 10        # state broadcasts per second (every 100 ms)
 # AMR Swarm — mutable shared state, touched only from the sim task
 # ---------------------------------------------------------------------------
 
+from core.grid_map import GridMap, WALKWAY as W, SHELF as S, PICKUP as P, DROP as D
+
+def build_web_grid() -> GridMap:
+    raw = []
+    for r in range(24):
+        if r in (4, 8, 12, 16):
+            row = [S] * 24
+            row[0] = W; row[11] = W; row[23] = W
+            raw.append(row)
+        else:
+            raw.append([W] * 24)
+    # Pickups
+    for p in [(0,0), (2,0), (4,0), (6,0)]:
+        raw[p[1]][p[0]] = P
+    # Drops
+    for d in [(14,20), (16,20), (18,20), (20,20)]:
+        raw[d[1]][d[0]] = D
+    return GridMap(raw)
+
 class AMRSwarm:
     """
     Encapsulates the entire running AMR simulation.
@@ -150,18 +169,16 @@ class AMRSwarm:
     def __init__(self, num_tasks: int = 50, seed: int = SIM_SEED) -> None:
         self._seed       = seed
         self._rng        = random.Random(seed)
-        self.grid        = build_warehouse_grid()
-        self._tasks_raw  = generate_tasks(self.grid, n=num_tasks, seed=seed)
+        self.grid        = build_web_grid()
+        self._tasks_raw  = []
         self._cells      = _walkable_cells(self.grid)
 
         # Shared space-time reservation table
         self._sta        = STATable()
 
         # Task queue and completed log
-        self._task_queue: List[Task] = list(self._tasks_raw)
-        self._completed:  List[Task] = []
-
-        # Dynamic obstacles added at runtime: set of (col, row)
+        self._task_queue: List[Task] = []
+        self._completed_tasks: int = 0
         self.obstacles: Set[Tuple[int, int]] = set()
 
         # Metrics
@@ -637,6 +654,12 @@ async def _handle_ws_command(raw: str, ws: WebSocket) -> None:
             swarm.spawn_robot()
             await ws.send_text(json.dumps({"ok": True, "action": action}))
 
+        elif action == "clear_obstacles":
+            swarm.obstacles.clear()
+            # Inform resolver
+            swarm._resolver._static_obstacles = set(swarm.obstacles)
+            await ws.send_text(json.dumps({"ok": True, "action": action}))
+
         elif action == "add_task":
             pickup = msg["pickup"]   # [x, y]
             drop   = msg["drop"]     # [x, y]
@@ -709,7 +732,7 @@ async def api_status() -> JSONResponse:
         "tick":            swarm.tick_count,
         "agents":          len(swarm.agents),
         "queued_tasks":    len(swarm._task_queue),
-        "completed_tasks": len(swarm._completed),
+        "completed_tasks": swarm._completed_tasks,
         "collisions":      swarm.total_collisions,
         "ws_clients":      len(_ws_clients),
     })
