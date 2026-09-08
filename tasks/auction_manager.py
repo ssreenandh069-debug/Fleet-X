@@ -164,6 +164,7 @@ class Task:
     drop_pos:   Position
     urgency:    float = 1.0
     issued_tick: int  = 0
+    task_type:  str   = "DEFAULT"
 
 
 # ---------------------------------------------------------------------------

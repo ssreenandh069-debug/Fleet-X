@@ -137,6 +137,9 @@ class AgentState(Enum):
     REVERSING       = "REVERSING"
     REROUTING       = "REROUTING"
     EMERGENCY_STOP  = "EMERGENCY_STOP"
+    LOADING         = "LOADING"
+    PLANNING_DROP   = "PLANNING_DROP"
+    UNLOADING       = "UNLOADING"
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +245,8 @@ class AMRAgent:
         self._last_sensor_dist: float = math.inf
         self._path_cursor:     int   = 0
         self._current_task:    Optional[Task] = None
+        self._dwell_ticks:     int   = 0
+        self._en_route_to_drop: bool = False
 
         # ── Telemetry snapshot (read by GodotBridge) ─────────────────
         self.telemetry: Dict = {
@@ -476,7 +481,7 @@ class AMRAgent:
             return
         if state == AgentState.BIDDING:
             return
-        if state == AgentState.PLANNING:
+        if state in (AgentState.PLANNING, AgentState.PLANNING_DROP):
             self._do_planning()
         elif state in (AgentState.NAVIGATING, AgentState.REROUTING):
             self._do_navigating()
@@ -484,6 +489,10 @@ class AMRAgent:
             self._do_yielding()
         elif state == AgentState.REVERSING:
             self._do_reversing()
+        elif state == AgentState.LOADING:
+            self._do_loading()
+        elif state == AgentState.UNLOADING:
+            self._do_unloading()
 
     def _do_planning(self) -> None:
         """Run STA* for the current task goal via ConflictResolver."""
@@ -492,19 +501,41 @@ class AMRAgent:
             self._transition(AgentState.IDLE)
             return
 
+        is_pickup = (self._state == AgentState.PLANNING)
+        goal_pos = task.pickup_pos if is_pickup else task.drop_pos
+
+        if not is_pickup:
+            # Need to secure lease for drop
+            if not self._lease_table.is_locked(goal_pos, self._tick_count) or self._lease_table.holder(goal_pos) != self.robot_id:
+                lease_ok = self._auction.try_claim_target(goal_pos, task.task_id, self._tick_count)
+                if not lease_ok:
+                    self._protect_idle_pos()
+                    return
+                rec = self._lease_table.get_record(goal_pos)
+                if rec and self._auction._on_lease_broadcast:
+                    from tasks.target_lease import LeaseAcquiredMessage
+                    self._auction._on_lease_broadcast(LeaseAcquiredMessage(
+                        robot_id=self.robot_id, task_id=task.task_id, target=goal_pos,
+                        lease_expiry_tick=rec.lease_expiry_tick, wall_expiry=rec.wall_expiry
+                    ))
+
         ok = self._resolver.set_goal(
             start=self._pos,
-            goal=task.pickup_pos,
+            goal=goal_pos,
             current_tick=self._tick_count,
             urgency=task.urgency,
             battery=self._ctx.battery,
         )
         if ok:
+            if not is_pickup:
+                self._en_route_to_drop = True
             self._transition(AgentState.NAVIGATING)
         else:
-            logger.warning("[%s] Planning failed -- back to IDLE.", self.robot_id)
-            self._current_task = None
-            self._transition(AgentState.IDLE)
+            logger.warning("[%s] Planning failed -- back to IDLE/LOADING.", self.robot_id)
+            if is_pickup:
+                self._lease_table.release(self.robot_id, goal_pos)
+                self._current_task = None
+                self._transition(AgentState.IDLE)
             self._protect_idle_pos()
 
     def _protect_idle_pos(self) -> None:
@@ -538,18 +569,42 @@ class AMRAgent:
         if c_state == RobotState.NAVIGATING:
             self._transition(AgentState.NAVIGATING)
 
-    def _on_goal_reached(self) -> None:
-        task = self._current_task
-        if task is not None:
+    def _do_loading(self) -> None:
+        self._dwell_ticks -= 1
+        self._protect_idle_pos()
+        if self._dwell_ticks <= 0:
+            self._transition(AgentState.PLANNING_DROP)
+
+    def _do_unloading(self) -> None:
+        self._dwell_ticks -= 1
+        self._protect_idle_pos()
+        if self._dwell_ticks <= 0:
+            task = self._current_task
             self.tasks_completed += 1
-            self._lease_table.release(self.robot_id, task.pickup_pos)
             if self._on_task_complete:
                 self._on_task_complete(task)
             logger.info("[%s] Task %s COMPLETE.", self.robot_id, task.task_id)
-        self._current_task = None
-        self._ctx.state    = RobotState.IDLE
-        self._transition(AgentState.IDLE)
-        self._protect_idle_pos()
+            self._current_task = None
+            self._en_route_to_drop = False
+            self._transition(AgentState.IDLE)
+
+    def _on_goal_reached(self) -> None:
+        task = self._current_task
+        if task is None:
+            return
+        
+        if not self._en_route_to_drop:
+            self._lease_table.release(self.robot_id, task.pickup_pos)
+            self._dwell_ticks = 8
+            self._ctx.state = RobotState.IDLE
+            self._transition(AgentState.LOADING)
+            self._protect_idle_pos()
+        else:
+            self._lease_table.release(self.robot_id, task.drop_pos)
+            self._dwell_ticks = 8
+            self._ctx.state = RobotState.IDLE
+            self._transition(AgentState.UNLOADING)
+            self._protect_idle_pos()
 
     def _on_task_assigned(self, task: Task) -> None:
         self._current_task = task
@@ -578,6 +633,8 @@ class AMRAgent:
 
     def _update_telemetry(self) -> None:
         trail = [(x, y) for x, y, _ in self._ctx.planned_path[self._ctx.path_index:]][:10]
+        has_cargo = self._en_route_to_drop or self._state == AgentState.UNLOADING
+        task_type = self._current_task.task_type if self._current_task else "IDLE"
         self.telemetry.update({
             "robot_id":   self.robot_id,
             "x":          float(self._pos[0]),
@@ -587,6 +644,9 @@ class AMRAgent:
             "battery":    round(self._ctx.battery, 1),
             "laser_trail": trail,
             "speed_frac": self._speed_frac,
+            "has_cargo":  has_cargo,
+            "task_type":  task_type,
+            "task":       self._current_task.task_id if self._current_task else "",
         })
 
     # ------------------------------------------------------------------

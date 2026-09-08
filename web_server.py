@@ -175,6 +175,13 @@ class AMRSwarm:
 
         # Pre-compute static warehouse layout for the broadcast payload
         self._warehouse_snapshot = self._build_warehouse_snapshot()
+        self._pickups = [tuple(p) for p in self._warehouse_snapshot["pickups"]]
+        self._destinations = [tuple(p) for p in self._warehouse_snapshot["drops"]] + [tuple(p) for p in self._warehouse_snapshot["shelves"]]
+        self._shelves = [tuple(p) for p in self._warehouse_snapshot["shelves"]]
+
+        self.shelf_inventory = {s: self._rng.randint(3, 6) for s in self._shelves}
+        self.total_restocked = 0
+        self.total_dispatched = 0
 
         # Fleet
         self.agents: List[AMRAgent] = []
@@ -200,10 +207,19 @@ class AMRSwarm:
                 on_intent_broadcast=self._on_intent,
                 on_hazard_broadcast=self._hazard_bus.append,
                 on_lease_broadcast=self._lease_bus.append,
-                on_task_complete=self._completed.append,
+                on_task_complete=self._on_task_complete,
             )
             self.agents.append(ag)
             logger.info("Spawned %s at %s", aid, pos)
+
+    def _on_task_complete(self, task: Task) -> None:
+        self._completed.append(task)
+        if task.task_type == "INBOUND_RESTOCK":
+            self.shelf_inventory[task.drop_pos] = min(10, self.shelf_inventory.get(task.drop_pos, 0) + 1)
+            self.total_restocked += 1
+        elif task.task_type == "OUTBOUND_FULFILLMENT":
+            self.shelf_inventory[task.pickup_pos] = max(0, self.shelf_inventory.get(task.pickup_pos, 0) - 1)
+            self.total_dispatched += 1
 
     def _on_intent(self, sender: str, wps: list) -> None:
         self._intent_bus[sender] = wps
@@ -239,6 +255,44 @@ class AMRSwarm:
     def tick(self) -> None:
         """Advance the simulation by one 100 ms tick."""
         t = self.tick_count
+
+        # Auto-replenishing task generator
+        idle = [ag for ag in self.agents if ag.state == AgentState.IDLE]
+        
+        active_pickups = {t.pickup_pos for t in self._task_queue}
+        active_drops = {t.drop_pos for t in self._task_queue}
+        for ag in self.agents:
+            if ag._current_task:
+                active_pickups.add(ag._current_task.pickup_pos)
+                active_drops.add(ag._current_task.drop_pos)
+                
+        if len(self._task_queue) < 4 and len(idle) > 0:
+            if self._rng.random() < 0.5:
+                # INBOUND_RESTOCK
+                shelves_with_capacity = [s for s, c in self.shelf_inventory.items() if c < 10 and s not in active_drops and s not in active_pickups]
+                free_pickups = [p for p in self._pickups if p not in active_pickups and p not in active_drops]
+                if shelves_with_capacity and free_pickups:
+                    pickup = self._rng.choice(free_pickups)
+                    drop = self._rng.choice(shelves_with_capacity)
+                    tid = f"IN_{t:05d}"
+                    task = Task(tid, pickup, drop, round(self._rng.uniform(0.5, 1.0), 2), t, "INBOUND_RESTOCK")
+                    self._task_queue.append(task)
+                    active_pickups.add(pickup)
+                    active_drops.add(drop)
+                    logger.info("Auto-generated task %s: pickup=%s drop=%s", tid, pickup, drop)
+            else:
+                # OUTBOUND_FULFILLMENT
+                shelves_with_stock = [s for s, c in self.shelf_inventory.items() if c > 0 and s not in active_pickups and s not in active_drops]
+                drops = [tuple(p) for p in self._warehouse_snapshot["drops"] if tuple(p) not in active_drops and tuple(p) not in active_pickups]
+                if shelves_with_stock and drops:
+                    pickup = self._rng.choice(shelves_with_stock)
+                    drop = self._rng.choice(drops)
+                    tid = f"OUT_{t:05d}"
+                    task = Task(tid, pickup, drop, round(self._rng.uniform(0.5, 1.0), 2), t, "OUTBOUND_FULFILLMENT")
+                    self._task_queue.append(task)
+                    active_pickups.add(pickup)
+                    active_drops.add(drop)
+                    logger.info("Auto-generated task %s: pickup=%s drop=%s", tid, pickup, drop)
 
         # Auction newly issued tasks
         available = [tk for tk in self._task_queue if tk.issued_tick <= t]
@@ -424,16 +478,21 @@ class AMRSwarm:
                 "state":   tel["state"],
                 "path":    path,
                 "task":    task_label,
+                "has_cargo": tel.get("has_cargo", False),
+                "task_type": tel.get("task_type", "IDLE"),
             })
 
         return {
             "warehouse": self._warehouse_snapshot,
             "obstacles": [[x, y] for x, y in self.obstacles],
             "robots":    robots,
+            "inventory": [{"pos": list(k), "count": v} for k, v in self.shelf_inventory.items()],
             "metrics": {
                 "collisions":      self.total_collisions,
                 "completed_tasks": completed_count,
                 "time_saved_pct":  time_saved_pct,
+                "total_restocked": self.total_restocked,
+                "total_dispatched": self.total_dispatched,
             },
         }
 
@@ -582,6 +641,47 @@ async def _handle_ws_command(raw: str, ws: WebSocket) -> None:
             pickup = msg["pickup"]   # [x, y]
             drop   = msg["drop"]     # [x, y]
             swarm.add_task(pickup, drop)
+            await ws.send_text(json.dumps({"ok": True, "action": action}))
+
+        elif action == "trigger_restock":
+            active_pickups = {t.pickup_pos for t in swarm._task_queue}
+            active_drops = {t.drop_pos for t in swarm._task_queue}
+            for ag in swarm.agents:
+                if ag._current_task:
+                    active_pickups.add(ag._current_task.pickup_pos)
+                    active_drops.add(ag._current_task.drop_pos)
+            
+            for _ in range(3):
+                t = swarm.tick_count
+                shelves_with_capacity = [s for s, c in swarm.shelf_inventory.items() if c < 10 and s not in active_drops and s not in active_pickups]
+                free_pickups = [p for p in swarm._pickups if p not in active_pickups and p not in active_drops]
+                if shelves_with_capacity and free_pickups:
+                    pickup = swarm._rng.choice(free_pickups)
+                    drop = swarm._rng.choice(shelves_with_capacity)
+                    tid = f"IN_{t:05d}_{swarm._rng.randint(0,999)}"
+                    task = Task(tid, pickup, drop, 1.0, t, "INBOUND_RESTOCK")
+                    swarm._task_queue.append(task)
+                    active_pickups.add(pickup)
+                    active_drops.add(drop)
+            await ws.send_text(json.dumps({"ok": True, "action": action}))
+            
+        elif action == "trigger_order":
+            active_pickups = {t.pickup_pos for t in swarm._task_queue}
+            active_drops = {t.drop_pos for t in swarm._task_queue}
+            for ag in swarm.agents:
+                if ag._current_task:
+                    active_pickups.add(ag._current_task.pickup_pos)
+                    active_drops.add(ag._current_task.drop_pos)
+            
+            t = swarm.tick_count
+            shelves_with_stock = [s for s, c in swarm.shelf_inventory.items() if c > 0 and s not in active_pickups and s not in active_drops]
+            drops = [tuple(p) for p in swarm._warehouse_snapshot["drops"] if tuple(p) not in active_drops and tuple(p) not in active_pickups]
+            if shelves_with_stock and drops:
+                pickup = swarm._rng.choice(shelves_with_stock)
+                drop = swarm._rng.choice(drops)
+                tid = f"OUT_{t:05d}_{swarm._rng.randint(0,999)}"
+                task = Task(tid, pickup, drop, 1.0, t, "OUTBOUND_FULFILLMENT")
+                swarm._task_queue.append(task)
             await ws.send_text(json.dumps({"ok": True, "action": action}))
 
         else:

@@ -127,18 +127,18 @@
     <aside id="sidebar">
 
       <!-- KPI chips -->
-      <div class="grid grid-cols-3 gap-1.5">
+      <div class="grid grid-cols-3 gap-1.5 mb-1.5">
         <div class="metric-card panel text-center">
           <div class="mono text-rose-400 font-bold text-base leading-none" id="kpi-collisions">0</div>
           <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Collisions</div>
         </div>
         <div class="metric-card panel text-center">
-          <div class="mono text-emerald-400 font-bold text-base leading-none" id="kpi-orders">0</div>
-          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Delivered</div>
+          <div class="mono text-emerald-400 font-bold text-base leading-none" id="kpi-restocked">0</div>
+          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Restocked</div>
         </div>
         <div class="metric-card panel text-center">
-          <div class="mono text-cyan-400 font-bold text-base leading-none" id="kpi-eff">0%</div>
-          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Efficiency</div>
+          <div class="mono text-cyan-400 font-bold text-base leading-none" id="kpi-dispatched">0</div>
+          <div class="text-[8px] text-slate-500 mt-1 uppercase tracking-wide">Dispatched</div>
         </div>
       </div>
 
@@ -180,12 +180,15 @@
       <!-- Command Actions -->
       <div class="panel p-2.5">
         <div class="mono text-[9px] text-slate-500 uppercase tracking-widest mb-2">Command Actions</div>
+        <div class="grid grid-cols-2 gap-1.5 mb-2">
+          <button id="btn-restock" class="btn btn-emerald col-span-2" aria-label="Trigger inbound restock">&#128666; Inbound Restock Shipment</button>
+          <button id="btn-order" class="btn btn-amber col-span-2" aria-label="Trigger outbound order">&#128230; Customer Flash Order</button>
+        </div>
         <div class="grid grid-cols-2 gap-1.5">
           <button id="btn-spawn"  class="btn btn-violet col-span-2" aria-label="Spawn a new AMR robot">&#43; Spawn AMR</button>
-          <button id="btn-order"  class="btn btn-cyan"              aria-label="Dispatch a delivery order">&#128230; Dispatch</button>
           <button id="btn-recall" class="btn btn-amber"             aria-label="Recall all to chargers">&#9889; Recall All</button>
           <button id="btn-break"  class="btn btn-rose"              aria-label="Break selected AMR">&#128165; Break Unit</button>
-          <button id="btn-clear"  class="btn btn-emerald"           aria-label="Clear all barriers">&#129529; Clear Barriers</button>
+          <button id="btn-clear"  class="btn btn-emerald col-span-2" aria-label="Clear all barriers">&#129529; Clear Barriers</button>
         </div>
         <p class="mono text-[8px] text-slate-600 mt-1.5 text-center">Click any floor tile to drop a hazard barrier</p>
       </div>
@@ -284,6 +287,7 @@ const DROP_BAYS = [
 });
 
 const OBSTACLES = new Set();
+var shelfInventory = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. COLLISION SYSTEM
@@ -552,14 +556,27 @@ function drawShelves(){
         ctx.fillStyle='rgba(100,150,200,0.25)'; ctx.fillRect(x,y,T,2);
         ctx.fillStyle='rgba(100,150,200,0.08)'; ctx.fillRect(x,y,2,T);
         ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y+T-2,T,2);
+        var key=c+','+r;
+        var count = shelfInventory[key];
+        if(count === undefined) count = 3;
+        
         ctx.strokeStyle='rgba(50,80,120,0.5)'; ctx.lineWidth=0.7;
         ctx.beginPath(); ctx.moveTo(x,y+T/2); ctx.lineTo(x+T,y+T/2); ctx.stroke();
-        var pc=palColors[(c*7+r*3)%palColors.length];
-        var pw=T*0.6, ph=T*0.3, ppx=x+(T-pw)/2, ppy=y+T*0.12;
-        ctx.fillStyle=pc; ctx.globalAlpha=0.65; ctx.fillRect(ppx,ppy,pw,ph); ctx.globalAlpha=1;
-        ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(ppx,ppy,pw,3);
-        var pc2=palColors[(c*5+r*9)%palColors.length];
-        ctx.fillStyle=pc2; ctx.globalAlpha=0.5; ctx.fillRect(ppx,ppy+T*0.37,pw,ph); ctx.globalAlpha=1;
+        
+        if (count > 0) {
+          var pc=palColors[(c*7+r*3)%palColors.length];
+          var pw=T*0.6, ph=T*0.3, ppx=x+(T-pw)/2, ppy=y+T*0.12;
+          ctx.fillStyle=pc; ctx.globalAlpha=0.65; ctx.fillRect(ppx,ppy,pw,ph); ctx.globalAlpha=1;
+          ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(ppx,ppy,pw,3);
+          if (count > 5) {
+            var pc2=palColors[(c*5+r*9)%palColors.length];
+            ctx.fillStyle=pc2; ctx.globalAlpha=0.5; ctx.fillRect(ppx,ppy+T*0.37,pw,ph); ctx.globalAlpha=1;
+          }
+          ctx.fillStyle='rgba(255,255,255,0.9)';
+          ctx.font='bold '+Math.floor(T*0.3)+'px JetBrains Mono,monospace';
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText(count, x+T/2, y+T/2);
+        }
         ctx.strokeStyle='rgba(20,40,70,0.8)'; ctx.lineWidth=0.5; ctx.strokeRect(x,y,T,T);
       }
     }
@@ -880,14 +897,17 @@ function dispatch(robot){
 function simTick(){
   var now=performance.now(), dt=now-lastTick; lastTick=now;
   rebuildOccupancy(); totalTicks++;
-  robots.forEach(function(r){ tickRobot(r,dt); });
-  // Replan any bot whose path hits a newly blocked cell
-  robots.forEach(function(rb){
-    if(rb.path&&rb.path.length>0){
-      var blocked=rb.path.some(function(nd){ return !isPassable(nd.col,nd.row,rb.id,false); });
-      if(blocked){ var last=rb.path[rb.path.length-1]; planTo(rb,last.col,last.row); }
-    }
-  });
+  var isOnline = (ws && ws.readyState === WebSocket.OPEN);
+  if(!isOnline) {
+    robots.forEach(function(r){ tickRobot(r,dt); });
+    // Replan any bot whose path hits a newly blocked cell
+    robots.forEach(function(rb){
+      if(rb.path&&rb.path.length>0){
+        var blocked=rb.path.some(function(nd){ return !isPassable(nd.col,nd.row,rb.id,false); });
+        if(blocked){ var last=rb.path[rb.path.length-1]; planTo(rb,last.col,last.row); }
+      }
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -987,10 +1007,8 @@ function updateSidebar(){
   bar.style.width=bat+'%'; bar.style.background=batColor(bat);
 
   document.getElementById('kpi-collisions').textContent=String(collisionCount);
-  document.getElementById('kpi-orders').textContent=String(ordersCompleted);
   var eff=0;
   if(totalTicks>0&&ordersCompleted>0) eff=Math.max(0,Math.round((1-(totalTicks/ordersCompleted/40))*100));
-  document.getElementById('kpi-eff').textContent=eff+'%';
   document.getElementById('hdr-robots').textContent=robots.length+' AMRs';
 
   var list=document.getElementById('fleet-list');
@@ -1086,11 +1104,16 @@ document.getElementById('btn-spawn').addEventListener('click',function(){
   sendWsCmd({action:'spawn_robot'});
 });
 
+document.getElementById('btn-restock').addEventListener('click',function(){
+  sendWsCmd({action:'trigger_restock'});
+  logEvent('Triggered Inbound Restock.','info');
+});
+
 document.getElementById('btn-order').addEventListener('click',function(){
   var idle=robots.filter(function(r){return !r.broken&&r.state==='IDLE';});
   if(idle.length>0){
-    dispatch(idle[Math.floor(Math.random()*idle.length)]);
-    sendWsCmd({action:'add_task',pickup:[PICKUP_BAYS[0].col,PICKUP_BAYS[0].row],drop:[DROP_BAYS[0].col,DROP_BAYS[0].row]});
+    sendWsCmd({action:'trigger_order'});
+    logEvent('Triggered Outbound Order.','info');
   } else { logEvent('No idle AMRs available.','warn'); }
 });
 
@@ -1152,20 +1175,41 @@ function connectWS(){
     ws.addEventListener('message',function(e){
       var data; try{data=JSON.parse(e.data);}catch(err){return;}
       if(Array.isArray(data.robots)){
+        var backendIds = new Set();
+        data.robots.forEach(function(br){ backendIds.add(parseInt(String(br.id).replace(/\D/g,''),10)); });
+        robots = robots.filter(function(r){ return backendIds.has(r.id); });
+
         data.robots.forEach(function(br){
           var numId=parseInt(String(br.id).replace(/\D/g,''),10);
           var loc=null;
           for(var i=0;i<robots.length;i++){if(robots[i].id===numId){loc=robots[i];break;}}
-          if(!loc) return;
+          if(!loc){
+             loc = makeRobot(numId, br.x||0, br.y||0);
+             robots.push(loc);
+             if(numId >= nextRobotId) nextRobotId = numId + 1;
+          }
           if(typeof br.x==='number') loc.px=br.x;
           if(typeof br.y==='number') loc.py=br.y;
           if(typeof br.battery==='number') loc.battery=Math.max(0,Math.min(100,br.battery));
           if(typeof br.state==='string') loc.state=String(br.state).slice(0,32);
+          if(typeof br.has_cargo==='boolean') loc.hasCargo=br.has_cargo;
           if(typeof br.task==='string'&&loc.mission) loc.mission.label=String(br.task).slice(0,50);
+          else if(typeof br.task==='string'&&!loc.mission) loc.mission={label:String(br.task).slice(0,50)};
+          else if(!br.task) loc.mission=null;
+
+          if(Array.isArray(br.path)){
+             loc.path = br.path.map(function(p){ return {col:p[0], row:p[1]}; });
+          }
         });
       }
-      if(data.metrics&&typeof data.metrics.collisions==='number'){
-        collisionCount=data.metrics.collisions;
+      if(data.inventory){
+        shelfInventory={};
+        data.inventory.forEach(function(inv){ shelfInventory[inv.pos[0]+','+inv.pos[1]]=inv.count; });
+      }
+      if(data.metrics){
+        if(typeof data.metrics.collisions==='number') collisionCount=data.metrics.collisions;
+        if(typeof data.metrics.total_restocked==='number') document.getElementById('kpi-restocked').textContent=data.metrics.total_restocked;
+        if(typeof data.metrics.total_dispatched==='number') document.getElementById('kpi-dispatched').textContent=data.metrics.total_dispatched;
       }
     });
     ws.addEventListener('close',function(){
