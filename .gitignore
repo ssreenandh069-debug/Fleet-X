@@ -1,1 +1,123 @@
-__pycache__
+# ==============================================================================
+# Fleet-X // Warehouse Digital Twin & Swarm Controller — .gitignore
+# ==============================================================================
+
+# --- Python & Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# --- Distribution, Builds & Packaging ---
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual Environments ---
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+bin/
+include/
+
+# --- Environment Variables & Secrets ---
+.env
+.env.local
+.env.*.local
+*.secret
+*.pem
+*.key
+
+# --- Testing, Coverage & Type Checking ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.tox/
+.nox/
+
+# --- Simulation Outputs & Logs ---
+*.log
+*.log.*
+sim_output.txt
+benchmark_results/
+telemetry_dump/
+scratch/
+*.tmp
+*.temp
+*.bak
+
+# --- IDEs & Code Editors ---
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# --- Operating System Artifacts ---
+# Windows
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+*Zone.Identifier
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# --- Godot / Game Engine (if applicable) ---
+.godot/
+*.translation
+*.import/
+
+# --- AI & Agent Workspace Artifacts ---
+.agents/
+.gemini/
+.system_generated/
+.user_uploaded/
