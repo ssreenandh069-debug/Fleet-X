@@ -144,8 +144,8 @@ The project uses minimal, robust, production-grade dependencies specified in [`r
 
 ### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/your-org/SIH26123.git
-cd SIH26123
+git clone https://github.com/ssreenandh069-debug/Fleet-X
+cd Fleet-X
 ```
 
 ### Step 2: (Recommended) Create a Virtual Environment
