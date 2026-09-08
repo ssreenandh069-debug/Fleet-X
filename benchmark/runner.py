@@ -464,6 +464,12 @@ class SwarmSimulator:
             # Auction round for newly available tasks
             self._auction_round(tick)
 
+            # Live-occupancy snapshot (start-of-tick) — drift-proof net
+            # for execution running ahead/behind STA reservations.
+            snapshot = {ag.robot_id: ag.position for ag in self._agents}
+            for ag in self._agents:
+                ag.set_peer_positions(snapshot)
+
             # Tick all agents
             for ag in self._agents:
                 ag.tick(delta_time=0.1)

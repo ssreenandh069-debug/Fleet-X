@@ -212,6 +212,13 @@ def run_realtime_sim(
                 if winner:
                     task_queue.remove(task)
 
+            # Live-occupancy snapshot (start-of-tick) so agents never
+            # step into a currently occupied cell even when STA has a
+            # timestamp hole due to execution drift.
+            snapshot = {ag.robot_id: ag.position for ag in agents}
+            for ag in agents:
+                ag.set_peer_positions(snapshot)
+
             # Tick all agents
             for ag in agents:
                 ag.tick(delta_time=0.1)
